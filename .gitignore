@@ -1,1 +1,4 @@
 /target
+/server/target/
+/common/Cargo.toml
+/client/target/
