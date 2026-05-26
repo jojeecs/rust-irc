@@ -1,7 +1,7 @@
 use std::io::{stdin, stdout, Read, Write};
 use std::net::TcpStream;
 use std::thread;
-use common::{DISCONNECT_DELIMITER, USERNAME_DELIMITER};
+use common::{CONNECT_DELIMITER, DISCONNECT_DELIMITER, USERNAME_DELIMITER};
 
 fn main() {
     let mut username = String::new();
@@ -35,14 +35,14 @@ fn read_socket(mut stream: TcpStream) {
 
         let message = String::from_utf8_lossy(&buffer[0..byte_val]).to_string();
 
-        stdout().flush().unwrap();
-
         println!("{message}");
     }
 }
 
 fn write_socket(mut stream: TcpStream, username: String) {
     stream.write_all(format!("{} {}", USERNAME_DELIMITER, username).as_bytes()).unwrap();
+    stream.write_all(format!("{}", CONNECT_DELIMITER).as_bytes()).unwrap();
+    println!("{username}");
     loop {
         let mut message = String::new();
 

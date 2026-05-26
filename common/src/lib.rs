@@ -1,9 +1,11 @@
 use std::sync::{mpsc, Arc, Mutex};
 use std::sync::mpsc::{Receiver, Sender};
-use crate::Signal::{Disconnect, Username};
+use crate::Signal::{Connect, Disconnect, Username};
 
-pub const USERNAME_DELIMITER: &'static str = "\\USRNME\\";
-pub const DISCONNECT_DELIMITER: &'static str = "\\DISCONNECT\\";
+pub const USERNAME_DELIMITER: &'static str = "\\USRNME";
+pub const DISCONNECT_DELIMITER: &'static str = "\\DISCONNECT";
+
+pub const CONNECT_DELIMITER: &'static str = "\\CONNECT";
 
 
 #[derive(Debug, Clone)]
@@ -15,10 +17,13 @@ pub struct Client {
 
 #[derive(Debug)]
 pub struct Server {
-    pub capacity: usize,
-    pub user_amount: usize,
     pub receiver: Receiver<Message>,
     pub clients: Arc<Mutex<Vec<Client>>>,
+}
+
+pub struct ServerDB {
+    pub capacity: usize,
+    pub user_count: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -33,17 +38,31 @@ pub struct Message {
 pub enum Signal {
     Disconnect,
     Username,
+    Connect,
+}
+
+pub enum Action {
+    UserDisconnect,
+    UserConnect,
+}
+
+impl ServerDB {
+    pub fn inc_user_count(&mut self) {
+        self.user_count += 1;
+    }
+
+    pub fn dec_user_count(&mut self) {
+        self.user_count -= 1;
+    }
 }
 
 impl Message {
-    pub fn parse_signal(&self) -> Option<Signal> {
-        if self.contents.starts_with(USERNAME_DELIMITER) {
-            return Some(Username);
-        } else if self.contents.starts_with(DISCONNECT_DELIMITER) {
+    pub fn parse_signal(contents: String) -> Option<Signal> {
+         if contents.trim_ascii().starts_with(DISCONNECT_DELIMITER) {
             return Some(Disconnect);
+        } else if contents.trim_ascii().starts_with(CONNECT_DELIMITER) {
+            return Some(Connect);
         }
-
-
 
         None
     }
@@ -51,8 +70,7 @@ impl Message {
 
 impl Server {
 
-    pub fn request_connection(sender: Sender<Message>, username: String, current_amount: usize) -> Option<Client> {
-        let id = current_amount;
+    pub fn request_connection(sender: Sender<Message>, username: String, id: usize) -> Option<Client> {
         Some(Client { username, sender, id })
     }
 
