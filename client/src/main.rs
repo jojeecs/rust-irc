@@ -1,7 +1,8 @@
-use std::io::{stdin, stdout, Read, Write};
+use std::io::{stdin, Read, Write};
 use std::net::TcpStream;
 use std::thread;
-use common::{CONNECT_DELIMITER, DISCONNECT_DELIMITER, USERNAME_DELIMITER};
+use std::time::Duration;
+use common::{CONNECT_DELIMITER, USERNAME_DELIMITER};
 
 fn main() {
     let mut username = String::new();
@@ -9,16 +10,15 @@ fn main() {
 
     stdin().read_line(&mut username).unwrap();
 
-
     let write_stream = TcpStream::connect("127.0.0.1:8080").unwrap();
     let read_stream = write_stream.try_clone().unwrap();
 
     thread::spawn(move || {
-        read_socket(read_stream);
+        write_socket(write_stream, username);
     });
 
     thread::spawn(move || {
-        write_socket(write_stream, username);
+        read_socket(read_stream);
     });
 
     loop {}
@@ -41,8 +41,8 @@ fn read_socket(mut stream: TcpStream) {
 
 fn write_socket(mut stream: TcpStream, username: String) {
     stream.write_all(format!("{} {}", USERNAME_DELIMITER, username).as_bytes()).unwrap();
+    thread::sleep(Duration::from_millis(100));
     stream.write_all(format!("{}", CONNECT_DELIMITER).as_bytes()).unwrap();
-    println!("{username}");
     loop {
         let mut message = String::new();
 
@@ -51,7 +51,6 @@ fn write_socket(mut stream: TcpStream, username: String) {
         stdin().read_line(&mut message).unwrap();
 
         if message.trim_ascii().eq_ignore_ascii_case("exit".trim_ascii()) {
-            stream.write_all(DISCONNECT_DELIMITER.as_bytes()).unwrap();
             std::process::exit(0);
         }
 
