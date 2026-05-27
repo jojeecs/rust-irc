@@ -1,19 +1,25 @@
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc};
 use std::sync::mpsc::{Receiver, Sender};
 use rand::{RngExt};
-use crate::Command::PM;
 
-// Delimiters, used when a stream writes to the server, and the server needs to recognize certain actions
-pub const USERNAME_DELIMITER: &'static str = "\\USRNME/";
-pub const DISCONNECT_DELIMITER: &'static str = "\\DISCONNECT/";
-pub const CONNECT_DELIMITER: &'static str = "\\CONNECT/";
+impl Delimiter<'static> {
+    pub const USERNAME: Delimiter<'static> = Delimiter("USERNAME");
+    pub const DISCONNECT: Delimiter<'static> = Delimiter("DISCONNECT");
+    pub const CONNECT: Delimiter<'static> = Delimiter("CONNECT");
+    pub const CMD_LEAVE: Delimiter<'static> = Delimiter("/exit");
+    pub const CMD_PM: Delimiter<'static> = Delimiter("/pm");
+}
 
-// Commands
-pub const LEAVE_COMMAND: &'static str = "/exit";
-pub const PM_COMMAND: &'static str = "/pm";
 
+pub struct Delimiter<'a>(&'a str);
+
+impl Display for Delimiter<'static> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -111,7 +117,7 @@ impl ClientID {
 impl Message {
 
     pub fn parse_command(contents: String) -> Option<Command> {
-        if contents.trim_ascii().starts_with(PM_COMMAND) {
+        if contents.starts_with(Delimiter::CMD_PM.0) {
             if let Some(user) = contents.split(" ").collect::<Vec<_>>().get(1) {
                 return Some(Command::PM(user.to_string()));
             }
@@ -128,6 +134,6 @@ impl Message {
 
         message.push_str(content_vec1.to_vec().join("").as_str());
 
-        message.trim_ascii().to_string()
+        message
     }
 }

@@ -1,10 +1,10 @@
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{mpsc, Arc};
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 use rand::{rng, Rng};
-use common::{Client, ClientID, Message, ServerDB, ServerState, Tag, USERNAME_DELIMITER};
+use common::{Client, ClientID, Message, ServerDB, ServerState, Tag};
 use common::ServerEvent;
 use common::ServerEvent::*;
 use std::collections::HashMap;
@@ -46,10 +46,11 @@ fn handle_new_connection(mut stream: TcpStream, server_sender: Arc<Sender<Server
         return;
     }
 
-    let request_line = String::from_utf8_lossy(&temp_buffer[0..byte_val]).trim_ascii().to_string();
+    let request_line = String::from_utf8_lossy(&temp_buffer[0..byte_val]).to_string();
+
 
     match &request_line[..].split(" ").collect::<Vec<_>>()[..] {
-        [USERNAME_DELIMITER, "/", username] => {
+        ["USERNAME", username] => {
             server_sender.send(IdentityRequest(username.to_string(), sender_ref)).unwrap();
         }
         _ => {
@@ -80,17 +81,18 @@ fn handle_new_connection(mut stream: TcpStream, server_sender: Arc<Sender<Server
     }
 }
 
-fn reader_socket(mut stream: TcpStream, server_sender: Arc<Sender<ServerEvent>>, client: Arc<ClientID>) {
+fn reader_socket(stream: TcpStream, server_sender: Arc<Sender<ServerEvent>>, client: Arc<ClientID>) {
+    let mut reader = BufReader::new(stream);
     let mut buffer = vec![0; 1024];
     loop {
-        let byte_val = stream.read(&mut buffer).unwrap_or(0);
+        let bye_value = reader.read(&mut buffer).unwrap();
 
-        if byte_val == 0 {
+        if bye_value == 0 {
             server_sender.send(Disconnect(client)).unwrap();
             break;
         }
 
-        let mut contents = String::from_utf8_lossy(&mut buffer[0..byte_val]).to_string().trim_ascii().to_string();
+        let mut contents = String::from_utf8_lossy(&mut buffer[0..bye_value - 1]).to_string();
 
         contents = format!("{}#{}: {}", client.username, client.tag, contents);
 
@@ -109,7 +111,6 @@ fn writer_socket(receiver: Receiver<ServerEvent>, mut stream: TcpStream) {
 }
 
 fn server_handler(mut server: ServerState) {
-
     loop {
         if let Ok(event) = server.receiver.recv() {
             match event {

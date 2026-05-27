@@ -1,8 +1,8 @@
 use std::io::{stdin, Read, Write};
 use std::net::TcpStream;
-use std::{io, thread};
+use std::{thread};
 use std::time::Duration;
-use common::{CONNECT_DELIMITER, USERNAME_DELIMITER};
+use common::{Delimiter};
 
 fn main() {
     let mut username = String::new();
@@ -29,6 +29,7 @@ fn read_socket(mut stream: TcpStream) {
         let byte_val = stream.read(&mut buffer).unwrap();
 
         if byte_val == 0 {
+            println!("Server shutting down.");
             std::process::exit(0);
         }
 
@@ -39,12 +40,12 @@ fn read_socket(mut stream: TcpStream) {
 }
 
 fn write_socket(mut stream: TcpStream, username: String) {
-    stream.write_all(format!("{} / {}",USERNAME_DELIMITER, username).as_bytes()).unwrap();
+    stream.write_all(format!("{} {}", Delimiter::USERNAME, username).as_bytes()).unwrap();
     thread::sleep(Duration::from_millis(100));
     loop {
         let mut message = String::new();
 
-        println!("Enter message or type exit to leave chatroom");
+        println!("Enter message or type /exit to leave chatroom");
 
         stdin().read_line(&mut message).unwrap();
 
