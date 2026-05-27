@@ -5,3 +5,6 @@ edition = "2024"
 
 [dependencies]
 common = { path = "../common" }
+ratatui = "0.30.0"
+color-eyre = "0.6.3"
+crossterm = "0.29.0"

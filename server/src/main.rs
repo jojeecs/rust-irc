@@ -1,103 +1,106 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc};
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 use rand::{rng, Rng};
-use common::{Action, Client, ClientID, Message, Server, ServerDB, Tag, USERNAME_DELIMITER};
-use common::Action::{UserConnect, UserDisconnect};
-use common::Command::PM;
-use common::Signal::*;
+use common::{Client, ClientID, Message, ServerDB, ServerState, Tag, USERNAME_DELIMITER};
+use common::ServerEvent;
+use common::ServerEvent::*;
+use std::collections::HashMap;
 
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
 
-    let senders: Arc<Mutex<Vec<Client>>> = Arc::new(Mutex::new(Vec::new()));
+    let (db_sender, db_recv) = mpsc::channel::<ServerEvent>();
+    let (server_sender, server_recv) = mpsc::channel::<ServerEvent>();
 
-    let mut occupied_ids: Vec<ClientID> = Vec::new();
+    let db = ServerDB { message_history: Vec::new(), receiver: db_recv };
 
-    let (server_send, server_recv) = mpsc::channel::<Message>();
-
-    let (db_send, db_recv) = mpsc::channel::<Action>();
-
-    let server = Server { receiver: server_recv, clients: Arc::clone(&senders) };
-
-    let server_db = Arc::new(Mutex::new(ServerDB { capacity: 10, user_count: 0 }));
-
-    let senders_ref = Arc::clone(&senders);
+    let server_state = ServerState::new(db_sender, server_recv);
 
     thread::spawn(move || {
-        db_handler(server_db, db_recv);
+       server_handler(server_state);
     });
 
-    thread::spawn(move || {
-        server_handler(server, db_send, senders_ref);
-    });
+    let sender_reference = Arc::new(server_sender);
 
     while let Ok((stream, _)) = listener.accept() {
-        let (sender, receiver) = Server::create_connection();
-
-        let new_user_id = rng().next_u64();
-        let mut client_id = ClientID::generate(String::new(), new_user_id as usize);
-
-        if occupied_ids.contains(&client_id) {
-            client_id = ClientID::generate(String::new(), new_user_id as usize);
-        } else {
-            occupied_ids.push(client_id.clone());
-        }
-
-        let client = Server::request_connection(sender, client_id).unwrap();
-        let client_clone = client.clone();
-
-        senders.lock().unwrap().push(client);
-
-        let reader_stream = stream.try_clone().unwrap();
-        let server_send_clone = server_send.clone();
-
-
+        let sender = Arc::clone(&sender_reference);
         thread::spawn(move || {
-            reader_socket(reader_stream, server_send_clone, client_clone);
-        });
-
-        thread::spawn(move || {
-            writer_socket(receiver, stream);
+            handle_new_connection(stream, Arc::clone(&sender));
         });
     }
 }
 
-fn reader_socket(mut stream: TcpStream, server_sender: Sender<Message>, mut client: Client) {
+fn handle_new_connection(mut stream: TcpStream, server_sender: Arc<Sender<ServerEvent>>) {
+    let (sender, receiver) = mpsc::channel::<ServerEvent>();
+
+    let sender_ref = Arc::new(sender.clone());
+
+    let mut temp_buffer = vec![0; 1024];
+
+    let byte_val = stream.read(&mut temp_buffer).unwrap();
+
+    if byte_val == 0 {
+        return;
+    }
+
+    let request_line = String::from_utf8_lossy(&temp_buffer[0..byte_val]).trim_ascii().to_string();
+
+    match &request_line[..].split(" ").collect::<Vec<_>>()[..] {
+        [USERNAME_DELIMITER, "/", username] => {
+            server_sender.send(IdentityRequest(username.to_string(), sender_ref)).unwrap();
+        }
+        _ => {
+
+        }
+    }
+
+    loop {
+        if let Ok(client_info) = receiver.recv() {
+            if let IdentityAssignment(mut id) = client_info {
+                let reader_stream = stream.try_clone().unwrap();
+
+                id.username = id.username.split_terminator("\n").collect::<String>();
+
+                let client = Client { sender, id: id.clone() };
+                server_sender.send(Connect(client)).unwrap();
+
+                thread::spawn(move || {
+                    reader_socket(reader_stream, Arc::clone(&server_sender), Arc::new(id));
+                });
+
+                thread::spawn(move || {
+                    writer_socket(receiver, stream);
+                });
+                break;
+            }
+        }
+    }
+}
+
+fn reader_socket(mut stream: TcpStream, server_sender: Arc<Sender<ServerEvent>>, client: Arc<ClientID>) {
     let mut buffer = vec![0; 1024];
     loop {
-        let client_reference = Arc::new(client.clone());
-        let byte_val = stream.read(&mut buffer).unwrap();
+        let byte_val = stream.read(&mut buffer).unwrap_or(0);
+
         if byte_val == 0 {
-            server_sender.send(Message { contents: String::new(), owner:  client_reference, message_id: 0, signal: Some(Disconnect)}).unwrap();
+            server_sender.send(Disconnect(client)).unwrap();
             break;
         }
-        let message = String::from_utf8_lossy(&buffer[0..byte_val]).to_string();
 
-        if message.starts_with(USERNAME_DELIMITER) {
-            let username = &message[USERNAME_DELIMITER.as_bytes().len() + 1..byte_val];
-            client.id.username = username.to_string().trim_ascii().to_string();
-            server_sender.send( Message {
-                contents: username.to_string(),
-                owner: client_reference,
-                message_id: rand::rng().next_u64() as usize,
-                signal: Some(Username) } ).unwrap();
-        } else {
-            let message = Message {
-                contents: message.clone(),
-                owner: client_reference,
-                message_id: rand::rng().next_u64() as usize,
-                signal: Message::parse_signal(message.clone()) };
-            server_sender.send(message).unwrap();
-        }
+        let mut contents = String::from_utf8_lossy(&mut buffer[0..byte_val]).to_string().trim_ascii().to_string();
+
+        contents = format!("{}#{}: {}", client.username, client.tag, contents);
+
+        server_sender.send(ChatMessage(Message { contents, owner: Arc::clone(&client), message_id: rng().next_u64() as usize })).unwrap();
     }
 }
 
-fn writer_socket(receiver: Receiver<Message>, mut stream: TcpStream) {
+fn writer_socket(receiver: Receiver<ServerEvent>, mut stream: TcpStream) {
     loop {
-        if let Ok(message) = receiver.recv() {
+        if let Ok(ChatMessage(message)) = receiver.recv() {
             match stream.write_all(message.contents.as_bytes()) { _ => {} }
         } else {
             break;
@@ -105,16 +108,29 @@ fn writer_socket(receiver: Receiver<Message>, mut stream: TcpStream) {
     }
 }
 
-fn db_handler(db: Arc<Mutex<ServerDB>>, receiver: Receiver<Action>) {
+fn server_handler(mut server: ServerState) {
+
     loop {
-        if let Ok(action) = receiver.recv() {
-            match action {
-                UserDisconnect(_) => {
-                    db.lock().unwrap().dec_user_count();
+        if let Ok(event) = server.receiver.recv() {
+            match event {
+                ChatMessage(msg) => {
+                    handle_broadcast(msg, &server.clients.values().collect::<Vec<_>>());
                 },
-                UserConnect(_) => {
-                    db.lock().unwrap().inc_user_count();
+                Disconnect(client) => {
+                    handle_client_disconnect(&client, &mut server.clients);
+                    println!("Disconnected {}", client);
+                    handle_broadcast(Message { contents: String::from(format!("{}#{} has disconnected", client.username, client.tag)), owner: Arc::clone(&server.identity), message_id: 0 },
+                                     &server.clients.values().collect());
                 },
+                Connect(client) => {
+                    println!("New connection from {}", client.id);
+                    handle_client_connect(client.id.clone(), client, &mut server.clients);
+                },
+                IdentityRequest(username, sender) => {
+                    let id = assign_identity(username.clone(), &server.clients);
+                    println!("Assigned new identity to user with ID {}", id.id);
+                    sender.send(IdentityAssignment(id)).unwrap();
+                }
                 _ => {
 
                 }
@@ -123,80 +139,36 @@ fn db_handler(db: Arc<Mutex<ServerDB>>, receiver: Receiver<Action>) {
     }
 }
 
-fn server_handler(server: Server, db_sender: Sender<Action>, senders: Arc<Mutex<Vec<Client>>>) {
-    let server_id = ClientID { tag: Tag { tag: 0 }, username: "Server".to_string(), id: 0 };
-    let server_client = Arc::new(Client { sender: mpsc::channel::<Message>().0, id: server_id });
-    loop {
-        if let Ok(mut message) = server.receiver.recv() {
-            if message.contents.is_empty() && message.signal.is_none() {
-                continue;
-            }
-            let mut clients = senders.lock().unwrap();
-            match message.clone().signal {
-                None => {
-                    for client in clients.iter() {
-                        if client.id == message.owner.id || message.contents.is_empty() {
-                            continue;
-                        }
-                        message.contents = format!("{}#{}: {}", message.owner.id.username.to_string().trim_ascii(), message.owner.id.tag, message.contents.trim_ascii());
-                        client.sender.send(message.clone()).unwrap();
-                    }
-                }
-                Some(signal) => {
-                    if signal == Disconnect {
-                        println!("{:?} signal from {}", signal, message.owner.id);
-                        db_sender.send(UserDisconnect(Arc::clone(&message.owner))).unwrap();
-                        let owner = message.owner;
-                        let mut idx: i32 = -1;
-                        for client in clients.iter() {
-                            if client.id == owner.id {
-                                idx = clients.iter().position(|x| x.id == owner.id).unwrap() as i32;
-                            } else {
-                                client.sender.send(Message { contents: format!("User {} Disconnected", owner.id.username.to_string().trim_ascii()).to_string(),
-                                    owner: Arc::clone(&owner), message_id: message.message_id, signal: None}).unwrap();
-                            }
-                        }
-                        if idx != -1 {
-                            clients.remove(idx as usize);
-                        }
-                    } else if signal == Connect {
-                        println!("{:?} signal from {}", signal, message.owner.id);
-                        db_sender.send(UserConnect(message.owner)).unwrap();
-                    } else if signal == Username {
-                        for client in clients.iter_mut() {
-                            if client.id == message.owner.id {
-                                client.id.username = message.clone().contents.trim_ascii().to_string();
-                                println!("{:?} signal from {}", signal, client.id.username);
-                            }
-                        }
-                    } else if signal == UserCommand {
-                        match Message::parse_command(message.clone().contents).unwrap() {
-                            PM(user) => {
-                                let mut user_found = false;
-                                for client in clients.iter() {
-                                    if client.id.username_tag().eq(user.trim_ascii()) {
-                                        user_found = true;
-                                        let contents = format!("From {}: {}", message.owner.id.username_tag(), Message::parse_pm_message(message.clone().contents));
-                                        let message = Message { contents, owner: message.owner.clone(), message_id: message.message_id, signal: None };
-                                        client.sender.send(message).unwrap();
-                                    }
-                                }
-                                if !user_found {
-                                    message.owner.sender.send(Message {
-                                        contents: String::from("That user does not exist."),
-                                        owner: Arc::clone(&server_client),
-                                        message_id: 0,
-                                        signal: None,
-                                    }).unwrap();
-                                }
-                            }
-                            _ => {
 
-                            }
-                        }
-                    }
-                }
-            }
+fn assign_identity(username: String, current_ids: &HashMap<ClientID, Client>) -> ClientID {
+    let tag = Tag::new();
+    let id = ClientID { username: username.clone(), tag, id: rng().next_u64() as usize };
+
+    if current_ids.contains_key(&id) {
+        return assign_identity(username, current_ids);
+    }
+
+    id
+}
+
+fn handle_client_connect(client_id: ClientID, client: Client, clients: &mut HashMap<ClientID, Client>) {
+    clients.insert(client_id, client);
+}
+fn handle_client_disconnect(client: &ClientID, clients: &mut HashMap<ClientID, Client>) {
+    clients.remove(&client).unwrap();
+}
+
+fn handle_broadcast(message: Message, clients: &Vec<&Client>) {
+    if message.contents.is_empty() {
+        return;
+    }
+    let originator = message.clone().owner;
+
+    for client in clients {
+        if client.id == *originator {
+            continue;
+        } else {
+            client.sender.send(ChatMessage(message.clone())).unwrap();
         }
     }
 }

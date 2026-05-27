@@ -1,9 +1,9 @@
+use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::sync::{mpsc, Arc, Mutex};
 use std::sync::mpsc::{Receiver, Sender};
 use rand::{RngExt};
 use crate::Command::PM;
-use crate::Signal::{Connect, Disconnect, UserCommand};
 
 // Delimiters, used when a stream writes to the server, and the server needs to recognize certain actions
 pub const USERNAME_DELIMITER: &'static str = "\\USRNME/";
@@ -17,63 +17,59 @@ pub const PM_COMMAND: &'static str = "/pm";
 
 #[derive(Debug, Clone)]
 pub struct Client {
-    pub sender: Sender<Message>,
+    pub sender: Sender<ServerEvent>,
     pub id: ClientID,
 }
 
-#[derive(Debug)]
-pub struct Server {
-    pub receiver: Receiver<Message>,
-    pub clients: Arc<Mutex<Vec<Client>>>,
+pub struct ServerState {
+    pub db_sender: Sender<ServerEvent>,
+    pub clients: HashMap<ClientID, Client>,
+    pub receiver: Receiver<ServerEvent>,
+    pub identity: Arc<ClientID>,
 }
 
 pub struct ServerDB {
-    pub capacity: usize,
-    pub user_count: usize,
+    pub message_history: Vec<ServerEvent>,
+    pub receiver: Receiver<ServerEvent>
 }
 
 #[derive(Clone, Debug)]
 pub struct Message {
     pub contents: String,
-    pub owner: Arc<Client>,
+    pub owner: Arc<ClientID>,
     pub message_id: usize,
-    pub signal: Option<Signal>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Signal {
-    Disconnect,
-    Username,
-    Connect,
-    UserCommand,
+#[derive(Debug)]
+pub enum ServerEvent {
+    ChatMessage(Message),
+    Disconnect(Arc<ClientID>),
+    Connect(Client),
+    IdentityRequest(String, Arc<Sender<ServerEvent>>),
+    IdentityAssignment(ClientID)
 }
 
-pub struct Room {
-
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Tag {
     pub tag: usize
 }
-#[derive(Clone, Debug, Eq)]
+#[derive(Clone, Debug, Eq, Hash)]
 pub struct ClientID {
     pub tag: Tag,
     pub username: String,
     pub id: usize,
 }
 
-pub enum Action {
-    UserDisconnect(Arc<Client>),
-    UserConnect(Arc<Client>),
-    RoomChange(Room, Room, Arc<Client>),
-    UsernameChange(String),
-}
-
 pub enum Command {
     PM(String),
     Leave,
+}
 
+impl ServerState {
+    pub fn new(db_sender: Sender<ServerEvent>, receiver: Receiver<ServerEvent>) -> ServerState {
+        let identity = Arc::new(ClientID { tag: Tag { tag: 0000 }, username: String::from("Server"), id: 0 });
+        ServerState { db_sender, clients: HashMap::new(), receiver, identity }
+    }
 }
 
 impl Tag {
@@ -87,7 +83,7 @@ impl Tag {
 
 impl PartialEq for ClientID {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
+        self.id == other.id || (self.tag == other.tag && self.username.eq(&other.username))
     }
 }
 
@@ -104,37 +100,15 @@ impl Display for Tag {
 }
 
 impl ClientID {
-    pub fn generate(username: String, id: usize) -> ClientID {
-        ClientID { tag: Tag::new(), username, id }
+    pub fn generate(username: &String, id: usize) -> ClientID {
+        ClientID { tag: Tag::new(), username: username.to_string(), id }
     }
 
     pub fn username_tag(&self) -> String {
         format!("{}#{}", self.username, self.tag).to_string()
     }
 }
-
-impl ServerDB {
-    pub fn inc_user_count(&mut self) {
-        self.user_count += 1;
-    }
-
-    pub fn dec_user_count(&mut self) {
-        self.user_count -= 1;
-    }
-}
-
 impl Message {
-    pub fn parse_signal(contents: String) -> Option<Signal> {
-         if contents.trim_ascii().starts_with(DISCONNECT_DELIMITER) {
-            return Some(Disconnect);
-        } else if contents.trim_ascii().starts_with(CONNECT_DELIMITER) {
-            return Some(Connect);
-        } else if contents.trim_ascii().starts_with("/") {
-             return Some(UserCommand);
-         }
-
-        None
-    }
 
     pub fn parse_command(contents: String) -> Option<Command> {
         if contents.trim_ascii().starts_with(PM_COMMAND) {
@@ -142,8 +116,6 @@ impl Message {
                 return Some(Command::PM(user.to_string()));
             }
         }
-
-
         None
     }
 
@@ -157,15 +129,5 @@ impl Message {
         message.push_str(content_vec1.to_vec().join("").as_str());
 
         message.trim_ascii().to_string()
-    }
-}
-
-impl Server {
-    pub fn request_connection(sender: Sender<Message>, id: ClientID) -> Option<Client> {
-        Some(Client { sender, id})
-    }
-
-    pub fn create_connection() -> (Sender<Message>, Receiver<Message>) {
-        mpsc::channel::<Message>()
     }
 }

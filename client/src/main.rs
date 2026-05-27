@@ -1,6 +1,6 @@
 use std::io::{stdin, Read, Write};
 use std::net::TcpStream;
-use std::thread;
+use std::{io, thread};
 use std::time::Duration;
 use common::{CONNECT_DELIMITER, USERNAME_DELIMITER};
 
@@ -23,14 +23,13 @@ fn main() {
 
     loop {}
 }
-
 fn read_socket(mut stream: TcpStream) {
     let mut buffer = vec![0; 1024];
     loop {
         let byte_val = stream.read(&mut buffer).unwrap();
 
         if byte_val == 0 {
-            break;
+            std::process::exit(0);
         }
 
         let message = String::from_utf8_lossy(&buffer[0..byte_val]).to_string();
@@ -40,9 +39,8 @@ fn read_socket(mut stream: TcpStream) {
 }
 
 fn write_socket(mut stream: TcpStream, username: String) {
-    stream.write_all(format!("{} {}", USERNAME_DELIMITER, username).as_bytes()).unwrap();
+    stream.write_all(format!("{} / {}",USERNAME_DELIMITER, username).as_bytes()).unwrap();
     thread::sleep(Duration::from_millis(100));
-    stream.write_all(format!("{}", CONNECT_DELIMITER).as_bytes()).unwrap();
     loop {
         let mut message = String::new();
 
