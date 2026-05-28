@@ -10,6 +10,7 @@ impl Delimiter<'static> {
     pub const CONNECT: Delimiter<'static> = Delimiter("CONNECT");
     pub const CMD_LEAVE: Delimiter<'static> = Delimiter("/exit");
     pub const CMD_PM: Delimiter<'static> = Delimiter("/pm");
+    pub const CHAT_MSG: Delimiter<'static> = Delimiter("CHAT");
 }
 
 
@@ -52,12 +53,20 @@ pub enum ServerEvent {
     Disconnect(Arc<ClientID>),
     Connect(Client),
     IdentityRequest(String, Arc<Sender<ServerEvent>>),
-    IdentityAssignment(ClientID)
+    IdentityAssignment(ClientID),
+    Null,
+}
+
+pub enum Packet {
+    Connect,
+    GlobalChat,
+    PrivateMessage,
+    Disconnect,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Tag {
-    pub tag: usize
+    pub tag: usize,
 }
 #[derive(Clone, Debug, Eq, Hash)]
 pub struct ClientID {
@@ -71,6 +80,10 @@ pub enum Command {
     Leave,
 }
 
+impl Packet {
+
+}
+
 impl ServerState {
     pub fn new(db_sender: Sender<ServerEvent>, receiver: Receiver<ServerEvent>) -> ServerState {
         let identity = Arc::new(ClientID { tag: Tag { tag: 0000 }, username: String::from("Server"), id: 0 });
@@ -80,7 +93,6 @@ impl ServerState {
 
 impl Tag {
     pub fn new() -> Tag {
-
         let tag = rand::rng().random_range(1000..10000);
 
         Tag { tag }
@@ -115,7 +127,6 @@ impl ClientID {
     }
 }
 impl Message {
-
     pub fn parse_command(contents: String) -> Option<Command> {
         if contents.starts_with(Delimiter::CMD_PM.0) {
             if let Some(user) = contents.split(" ").collect::<Vec<_>>().get(1) {

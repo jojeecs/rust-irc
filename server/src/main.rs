@@ -4,10 +4,11 @@ use std::sync::{mpsc, Arc};
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 use rand::{rng, Rng};
-use common::{Client, ClientID, Message, ServerDB, ServerState, Tag};
+use common::{Client, ClientID, Message, Packet, ServerDB, ServerState, Tag};
 use common::ServerEvent;
 use common::ServerEvent::*;
 use std::collections::HashMap;
+use std::fs::read;
 
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
@@ -38,18 +39,20 @@ fn handle_new_connection(mut stream: TcpStream, server_sender: Arc<Sender<Server
 
     let sender_ref = Arc::new(sender.clone());
 
-    let mut temp_buffer = vec![0; 1024];
+    let mut str_buffer = String::new();
 
-    let byte_val = stream.read(&mut temp_buffer).unwrap();
+    let reader_stream = stream.try_clone().unwrap();
+    let writer_stream = stream.try_clone().unwrap();
+
+    let mut reader = BufReader::new(stream);
+
+    let byte_val = reader.read_line(&mut str_buffer).unwrap();
 
     if byte_val == 0 {
         return;
     }
 
-    let request_line = String::from_utf8_lossy(&temp_buffer[0..byte_val]).to_string();
-
-
-    match &request_line[..].split(" ").collect::<Vec<_>>()[..] {
+    match &str_buffer[..].split(" ").collect::<Vec<_>>()[..] {
         ["USERNAME", username] => {
             server_sender.send(IdentityRequest(username.to_string(), sender_ref)).unwrap();
         }
@@ -61,7 +64,6 @@ fn handle_new_connection(mut stream: TcpStream, server_sender: Arc<Sender<Server
     loop {
         if let Ok(client_info) = receiver.recv() {
             if let IdentityAssignment(mut id) = client_info {
-                let reader_stream = stream.try_clone().unwrap();
 
                 id.username = id.username.split_terminator("\n").collect::<String>();
 
@@ -73,7 +75,7 @@ fn handle_new_connection(mut stream: TcpStream, server_sender: Arc<Sender<Server
                 });
 
                 thread::spawn(move || {
-                    writer_socket(receiver, stream);
+                    writer_socket(receiver, writer_stream);
                 });
                 break;
             }
@@ -83,22 +85,32 @@ fn handle_new_connection(mut stream: TcpStream, server_sender: Arc<Sender<Server
 
 fn reader_socket(stream: TcpStream, server_sender: Arc<Sender<ServerEvent>>, client: Arc<ClientID>) {
     let mut reader = BufReader::new(stream);
-    let mut buffer = vec![0; 1024];
+    let mut str_buf = String::new();
     loop {
-        let bye_value = reader.read(&mut buffer).unwrap();
+        let byte_value = reader.read_line(&mut str_buf).unwrap();
 
-        if bye_value == 0 {
+        if byte_value == 0 {
             server_sender.send(Disconnect(client)).unwrap();
             break;
         }
 
-        let mut contents = String::from_utf8_lossy(&mut buffer[0..bye_value - 1]).to_string();
+        let event_type = str_buf.split(" ").next().unwrap();
 
-        contents = format!("{}#{}: {}", client.username, client.tag, contents);
+        match event_type {
+            "CHAT" => {
+                let contents = str_buf.clone();
 
-        server_sender.send(ChatMessage(Message { contents, owner: Arc::clone(&client), message_id: rng().next_u64() as usize })).unwrap();
+                server_sender.send(ChatMessage(Message { contents:  str_buf.clone(), owner: Arc::clone(&client), message_id: 0 })).unwrap();
+            },
+            _ => {
+
+            }
+        }
+
     }
 }
+
+
 
 fn writer_socket(receiver: Receiver<ServerEvent>, mut stream: TcpStream) {
     loop {
