@@ -1,8 +1,8 @@
-use std::io::{stdin, Read, Write};
+use std::io::{stdin, BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::{thread};
 use std::time::Duration;
-use common::{Delimiter};
+use common::{Delimiter, ServerEvent};
 
 fn main() {
     let mut username = String::new();
@@ -24,16 +24,17 @@ fn main() {
     loop {}
 }
 fn read_socket(mut stream: TcpStream) {
-    let mut buffer = vec![0; 1024];
+    let mut str_buffer = String::new();
+    let mut reader = BufReader::new(stream);
     loop {
-        let byte_val = stream.read(&mut buffer).unwrap();
+        let byte_val = reader.read_line(&mut str_buffer).unwrap();
 
         if byte_val == 0 {
             println!("Server shutting down.");
             std::process::exit(0);
         }
 
-        let message = String::from_utf8_lossy(&buffer[0..byte_val]).to_string();
+        let message = str_buffer.clone();
 
         println!("{message}");
     }
@@ -41,7 +42,6 @@ fn read_socket(mut stream: TcpStream) {
 
 fn write_socket(mut stream: TcpStream, username: String) {
     stream.write_all(format!("{} {}", Delimiter::USERNAME, username).as_bytes()).unwrap();
-    thread::sleep(Duration::from_millis(100));
     loop {
         let mut message = String::new();
 
@@ -49,10 +49,12 @@ fn write_socket(mut stream: TcpStream, username: String) {
 
         stdin().read_line(&mut message).unwrap();
 
-        if message.trim_ascii().eq_ignore_ascii_case("exit".trim_ascii()) {
+        if message.eq_ignore_ascii_case("exit\n") {
             std::process::exit(0);
         }
 
-        stream.write_all(message.as_bytes()).unwrap();
+        let payload = format!(r"{} {}\n", Delimiter::CHAT_MSG, message);
+
+        stream.write_all(payload.as_bytes()).unwrap();
     }
 }
