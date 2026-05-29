@@ -1,12 +1,11 @@
 use std::io::{stdin, BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::{thread};
-use std::time::Duration;
-use common::{Delimiter, ServerEvent};
+use common::{ClientPacket};
 
 fn main() {
     let mut username = String::new();
-    println!("Welcome to the chatroom!\nPlease enter a username to continue: ");
+    println!("Welcome to the chatroom!\nPlease enter a client_id to continue: ");
 
     stdin().read_line(&mut username).unwrap();
 
@@ -23,25 +22,25 @@ fn main() {
 
     loop {}
 }
-fn read_socket(mut stream: TcpStream) {
-    let mut str_buffer = String::new();
+fn read_socket(stream: TcpStream) {
     let mut reader = BufReader::new(stream);
     loop {
+        let mut str_buffer = String::new();
         let byte_val = reader.read_line(&mut str_buffer).unwrap();
 
-        if byte_val == 0 {
-            println!("Server shutting down.");
-            std::process::exit(0);
-        }
+        // if byte_val == 0 {
+        //     println!("Server shutting down.");
+        //     std::process::exit(0);
+        // }
 
-        let message = str_buffer.clone();
-
-        println!("{message}");
+        println!("{}",str_buffer.trim_ascii());
     }
 }
 
 fn write_socket(mut stream: TcpStream, username: String) {
-    stream.write_all(format!("{} {}", Delimiter::USERNAME, username).as_bytes()).unwrap();
+    let username_packet = serde_json::to_string(&ClientPacket::Connect {username}).unwrap();
+    stream.write_all(username_packet.as_bytes()).unwrap();
+    stream.write_all(b"\n").unwrap();
     loop {
         let mut message = String::new();
 
@@ -53,8 +52,13 @@ fn write_socket(mut stream: TcpStream, username: String) {
             std::process::exit(0);
         }
 
-        let payload = format!(r"{} {}\n", Delimiter::CHAT_MSG, message);
+        let packet = ClientPacket::ChatMessage {
+            contents: message,
+        };
 
-        stream.write_all(payload.as_bytes()).unwrap();
+        let serialized = serde_json::to_string(&packet).unwrap();
+
+        stream.write_all(serialized.as_bytes()).unwrap();
+        stream.write_all(b"\n").unwrap();
     }
 }
