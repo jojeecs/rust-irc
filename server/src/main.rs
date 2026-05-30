@@ -3,10 +3,11 @@ use std::sync::{mpsc, Arc};
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 use rand::{rng, Rng, RngExt};
-use common::{ClientSession, Client, Message, ServerState, Tag, ClientPacket, ServerEvent, ClientID};
+use common::{ClientSession, Client, Message, ServerState, ClientPacket, ServerEvent, ClientID};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
-use common::ServerEvent::{ConnectionAccepted, ConnectionRejected};
+use std::io::{BufRead, BufReader, Write};
+use common::ClientPacket::Disconnect;
+use common::ServerEvent::{Broadcast, ChatMessageReceive, ConnectionAccepted, ConnectionRejected, Error, PrivateMessage};
 use common::UserPrivilege::{Member};
 
 fn main() {
@@ -45,8 +46,6 @@ fn handle_new_connection(stream: TcpStream, server_sender: Arc<Sender<ServerEven
     if byte_val == 0 {
         println!("error");
     }
-
-    println!("{}", line);
 
     let packet: ClientPacket = serde_json::from_str(&line).unwrap();
 
@@ -87,18 +86,54 @@ fn reader_socket(stream: TcpStream, server_sender: Arc<Sender<ServerEvent>>, cli
 
         let byte_val = reader.read_line(&mut line).unwrap();
 
+        if byte_val == 0 {
+            server_sender.send(ServerEvent::UserDisconnected {user: client}).unwrap();
+            break;
+        }
+
         let packet: ClientPacket = serde_json::from_str(&line).unwrap();
 
+        let event = packet_to_event(packet, Arc::clone(&client));
+
+        server_sender.send(event).unwrap();
     }
+}
+
+fn packet_to_event(packet: ClientPacket, client: Arc<Client>) -> ServerEvent {
+    match packet {
+        ClientPacket::ChatMessage {contents} => {
+            ChatMessageReceive {from: Arc::clone(&client), contents}
+        } ClientPacket::PrivateMessage {to, contents, ..} => {
+            PrivateMessage {to, from: Arc::clone(&client), contents}
+        }
+        _ => {
+            Error {message: "Error".to_string()}
+        }
+    }
+
 }
 
 
 fn writer_socket(receiver: Receiver<ServerEvent>, mut stream: TcpStream) {
     loop {
         if let Ok(event) = receiver.recv() {
-            
+            stream.write_all(serde_json::to_string(&event_to_packet(event)).unwrap().as_bytes()).unwrap();
+            stream.write_all(b"\n").unwrap();
         }
     }
+}
+
+fn event_to_packet(server_event: ServerEvent) -> ClientPacket {
+    match server_event {
+        Broadcast {contents} => {
+            ClientPacket::ChatMessage {contents}
+        }
+        _ => {
+            Disconnect
+        }
+    }
+
+
 }
 
 fn server_handler(mut server: ServerState) {
@@ -106,14 +141,24 @@ fn server_handler(mut server: ServerState) {
         if let Ok(event) = server.receiver.recv() {
             match event {
                 ServerEvent::ConnectionRequest {username, sender} => {
-                    let new_client = assign_identity(username, &server.clients);
-                    if new_client.is_some() {
-                        let client = new_client.unwrap();
-                        let id = client.client_id.clone();
-                        sender.send(ConnectionAccepted { client_id: id.clone() }).unwrap();
-                        server.clients.insert(client, ClientSession { client_id: id, sender  });
-                    } else {
-                        sender.send(ConnectionRejected {reason: "Incorrect username formatting".to_string()}).unwrap();
+                    println!("Connection request from: {username}");
+                    handle_client_connect(username, sender, &mut server.clients);
+                }, ChatMessageReceive {from, contents} => {
+                    println!("Broadcasting message \"{}\" from {}#{} ", contents, from.client_id.username, from.client_id.chat_tag);
+                    handle_broadcast(contents, from.client_id.id, &server.clients.values().collect::<Vec<_>>());
+                }, ServerEvent::UserDisconnected {user} => {
+                    handle_client_disconnect(&user, &mut server.clients);
+                }, PrivateMessage {to, from, contents} => {
+                    let username = to.split("#").collect::<Vec<_>>().get(0).unwrap().to_string();
+                    let tag = to.split("#").collect::<Vec<_>>().get(1).unwrap().to_string().parse::<usize>().unwrap();
+
+                    match find_user(&username, tag, &server.clients) {
+                        Some(client) => {
+                            handle_pm(&client, from, contents, &server.clients);
+                        },
+                        None => {
+                            server.clients.get(&from).unwrap().sender.send(Error {message: String::from("User not found")}).unwrap();
+                        }
                     }
                 }
                 _ => {
@@ -126,7 +171,7 @@ fn server_handler(mut server: ServerState) {
 
 fn find_user<'a>(username: &String, tag: usize, clients: &'a HashMap<Client, ClientSession>) -> Option<&'a Client> {
     for client in clients.keys().collect::<Vec<_>>() {
-        if client.client_id.username.eq(username) && client.client_id.tag.eq(&tag) {
+        if client.client_id.username.eq(username) && client.client_id.chat_tag.eq(&tag) {
             return Some(&client);
         }
     }
@@ -134,14 +179,14 @@ fn find_user<'a>(username: &String, tag: usize, clients: &'a HashMap<Client, Cli
     None
 }
 
-fn handle_pm(to: &Client, from: Arc<Client>, message: String, current_users: &HashMap<Client, ClientSession>) -> Option<()> {
-
-    Some(())
+fn handle_pm(to: &Client, from: Arc<Client>, message: String, current_users: &HashMap<Client, ClientSession>) {
+    let formatted = format!("{}#{}: {}", from.client_id.username, from.client_id.chat_tag, message);
+    current_users.get(to).unwrap().sender.send(ServerEvent::Message { contents: formatted} ).unwrap();
 }
 
 
 fn assign_identity(username: String, current_ids: &HashMap<Client, ClientSession>) -> Option<Client> {
-    let user_id = ClientID { username: username.clone(), tag: rng().random_range(1000..10000), id: rng().next_u64() as usize };
+    let user_id = ClientID { username: username.clone(), chat_tag: rng().random_range(1000..10000), id: rng().next_u64() as usize };
     let id = Client { client_id: user_id, privilege: Member };
 
     if current_ids.contains_key(&id) {
@@ -151,23 +196,34 @@ fn assign_identity(username: String, current_ids: &HashMap<Client, ClientSession
     Some(id)
 }
 
-fn handle_client_connect(client_id: Client, client: ClientSession, clients: &mut HashMap<Client, ClientSession>) {
-    clients.insert(client_id, client);
+fn handle_client_connect(username: String, sender: Sender<ServerEvent>, clients: &mut HashMap<Client, ClientSession>) {
+    let new_client = assign_identity(username, &clients);
+    if new_client.is_some() {
+        let client = new_client.unwrap();
+        let id = client.client_id.clone();
+        sender.send(ConnectionAccepted { client_id: id.clone() }).unwrap();
+        clients.insert(client, ClientSession { client_id: id, sender });
+    } else {
+        sender.send(ConnectionRejected {reason: "Incorrect username formatting".to_string()}).unwrap();
+    }
 }
 fn handle_client_disconnect(client: &Client, clients: &mut HashMap<Client, ClientSession>) {
+    handle_broadcast(format!("{}#{} has left the chat.", client.client_id.username, client.client_id.chat_tag).to_string(),
+                     client.client_id.id,
+                     &clients.values().collect::<Vec<_>>());
     clients.remove(&client).unwrap();
 }
 
-fn handle_broadcast(message: Message, clients: &Vec<&ClientSession>) {
-    if message.contents.is_empty() {
+fn handle_broadcast(contents: String, originator: usize, clients: &Vec<&ClientSession>) {
+    if contents.is_empty() {
         return;
     }
-    let originator = message.clone().owner;
 
     for session in clients {
-        if session.client_id.id == originator.client_id.id {
+        if session.client_id.id == originator {
             continue;
         } else {
+            session.sender.send(Broadcast {contents: contents.clone()}).unwrap();
         }
     }
 }
