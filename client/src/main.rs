@@ -1,4 +1,4 @@
-use std::io::{stdin, BufRead, BufReader, Read, Write};
+use std::io::{stdin, BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::{thread};
 use common::{ClientPacket};
@@ -6,23 +6,42 @@ use common::ClientPacket::{ChatMessage, Disconnect, PrivateMessage};
 
 fn main() {
     let mut username = String::new();
-    println!("Welcome to the chatroom!\nPlease enter a client_id to continue: ");
+    println!("Welcome to the chatroom!\nPlease enter a username to continue: ");
+    loop {
+        stdin().read_line(&mut username).unwrap();
+        if verify_username(&username) { break; }
+        else { username.clear(); }
+    }
 
-    stdin().read_line(&mut username).unwrap();
 
-    let write_stream = TcpStream::connect("127.0.0.1:8080").unwrap();
-    let read_stream = write_stream.try_clone().unwrap();
+    let write_stream = TcpStream::connect("127.0.0.1:8080");
+    if let Ok(write_stream) = write_stream {
+        let read_stream = write_stream.try_clone().unwrap();
 
-    thread::spawn(move || {
-        write_socket(write_stream, username);
-    });
+        thread::spawn(move || {
+            write_socket(write_stream, username);
+        });
 
-    thread::spawn(move || {
-        read_socket(read_stream);
-    });
-
-    loop {}
+        thread::spawn(move || {
+            read_socket(read_stream);
+        });
+    } else {
+        println!("Server is currently down. Please try connecting later.");
+    }
 }
+
+fn verify_username(username: &String) -> bool {
+    if username.is_empty() {
+        println!("Usernames cannot be empty!");
+        return false;
+    } else if username.contains(" ") {
+        println!("Usernames cannot contain spaces!");
+        return false;
+    }
+
+    true
+}
+
 fn read_socket(stream: TcpStream) {
     let mut reader = BufReader::new(stream);
     loop {
@@ -37,8 +56,8 @@ fn read_socket(stream: TcpStream) {
         let packet: ClientPacket = serde_json::from_str(&str_buffer).unwrap();
 
         match packet {
-            ClientPacket::ChatMessage {contents} => {
-                println!("{}", contents.trim_ascii());
+            ChatMessage {contents} => {
+                println!(r"{}", contents.trim_ascii());
             }
             _ => {
                 println!("{packet:?}")

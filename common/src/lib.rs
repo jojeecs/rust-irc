@@ -5,18 +5,23 @@ use std::sync::mpsc::{Receiver, Sender};
 use serde::{Deserialize, Serialize};
 use crate::UserPrivilege::{Member};
 
+/// `ClientSession` holds information regarding a connection between client and server.
+///
 #[derive(Debug, Clone)]
 pub struct ClientSession {
     pub sender: Sender<ServerEvent>,
     pub client_id: ClientID,
 }
 
+/// `Client` holds information regarding a client
 #[derive(Clone, Debug, Eq, Hash)]
 pub struct Client {
     pub client_id: ClientID,
     pub privilege: UserPrivilege,
 }
 
+/// `ClientID` is a support struct for `Client` that holds additional information.
+/// This is mainly used for identifying `ClientSessions` in the server struct.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ClientID {
     pub chat_tag: usize,
@@ -48,6 +53,7 @@ pub enum ClientPacket {
     Connect { username: String },
     ChatMessage { contents: String },
     PrivateMessage { to: String, contents: String },
+    HTTPRequest {resource: String},
     Disconnect
 }
 
@@ -61,6 +67,8 @@ pub enum ServerEvent {
     PrivateMessage { to: String, from: Arc<Client>, contents: String },
     Message { contents: String },
     UserDisconnected { user: Arc<Client> },
+    HTTPRequest {resource: String, sender: Arc<Sender<ServerEvent>>},
+    HTTPResponse {status: String, contents: String, length: usize},
     Error { message: String }
 }
 
