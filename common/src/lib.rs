@@ -54,6 +54,7 @@ pub enum ClientPacket {
     ChatMessage { contents: String },
     PrivateMessage { to: String, contents: String },
     HTTPRequest {resource: String},
+    IdentityRequest { id: usize},
     Disconnect
 }
 

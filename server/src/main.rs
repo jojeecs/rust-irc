@@ -1,3 +1,4 @@
+use std::thread::sleep;
 use common::ClientPacket::{Disconnect, HTTPRequest};
 use common::ServerEvent::{Broadcast, ChatMessageReceive, ConnectionAccepted, ConnectionRejected, Error, HTTPResponse, PrivateMessage, };
 use common::UserPrivilege::{Admin, Member};
@@ -28,6 +29,7 @@ async fn main() {
     loop {
         let (socket, _) = listener.accept().await.unwrap();
 
+
         let sender = Arc::clone(&sender_reference);
         tokio::spawn(async move {
             handle_new_connection(socket, sender).await;
@@ -41,14 +43,27 @@ async fn handle_new_connection(stream: TcpStream, server_sender: Arc<Sender<Serv
 
     let mut line = String::new();
 
+    stream.read_line(&mut line).await.unwrap();
+
+    match serde_json::from_str::<ClientPacket>(&line).unwrap() {
+        ClientPacket::IdentityRequest { id } => {
+            stream.write("Enter username: \n".as_bytes()).await.unwrap();
+        }
+        _ => {
+
+        }
+    }
+
+    line = String::new();
+
     let byte_val = stream.read_line(&mut line).await.unwrap();
 
     let (reader_stream, mut writer_stream) = stream.into_inner().into_split();
 
     if byte_val == 0 {
-        println!("Error during handshake. Connection information: IP: {}",writer_stream.peer_addr().unwrap().ip());
+        println!("Client disconnected during handshake. Connection information: IP: {}",writer_stream.peer_addr().unwrap().ip());
+        return;
     }
-
 
     let packet: ClientPacket = serde_json::from_str(&line).unwrap_or_else(|_| {
         match &line.lines().next().unwrap().split(" ").collect::<Vec<_>>()[..] {
@@ -60,6 +75,7 @@ async fn handle_new_connection(stream: TcpStream, server_sender: Arc<Sender<Serv
             },
         }
     });
+
 
     match packet {
         ClientPacket::Connect { username } => {
