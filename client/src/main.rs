@@ -1,10 +1,12 @@
-use std::io::{stdin, BufRead, BufReader, Write};
-use std::net::TcpStream;
-use std::{thread};
+use std::io::{stdin};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use common::{ClientPacket};
 use common::ClientPacket::{ChatMessage, Disconnect, PrivateMessage};
+use tokio::net::{ TcpStream};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let mut username = String::new();
     println!("Welcome to the chatroom!\nPlease enter a username to continue: ");
     loop {
@@ -13,18 +15,18 @@ fn main() {
         else { username.clear(); }
     }
 
+    let str = TcpStream::connect("127.0.0.1:8080").await;
+    if let Ok(stream) = str {
+        let (read_stream, write_stream) = stream.into_split();
 
-    let write_stream = TcpStream::connect("127.0.0.1:8080");
-    if let Ok(write_stream) = write_stream {
-        let read_stream = write_stream.try_clone().unwrap();
 
-        thread::spawn(move || {
-            write_socket(write_stream, username);
+        tokio::spawn(async move {
+            write_socket(write_stream, username).await;
         });
 
-        thread::spawn(move || {
-            read_socket(read_stream);
-        });
+        tokio::spawn(async move  {
+            read_socket(read_stream).await;
+        }).await.unwrap();
     } else {
         println!("Server is currently down. Please try connecting later.");
     }
@@ -42,11 +44,12 @@ fn verify_username(username: &String) -> bool {
     true
 }
 
-fn read_socket(stream: TcpStream) {
-    let mut reader = BufReader::new(stream);
+async fn read_socket(stream: OwnedReadHalf) {
+    let mut stream = BufReader::new(stream);
     loop {
         let mut str_buffer = String::new();
-        let byte_val = reader.read_line(&mut str_buffer).unwrap();
+
+        let byte_val = stream.read_line(&mut str_buffer).await.unwrap();
 
         if byte_val == 0 {
             println!("Server shutting down.");
@@ -66,10 +69,10 @@ fn read_socket(stream: TcpStream) {
     }
 }
 
-fn write_socket(mut stream: TcpStream, username: String) {
+async fn write_socket(mut stream: OwnedWriteHalf, username: String) {
     let username_packet = serde_json::to_string(&ClientPacket::Connect {username}).unwrap();
-    stream.write_all(username_packet.as_bytes()).unwrap();
-    stream.write_all(b"\n").unwrap();
+    stream.write_all(username_packet.as_bytes()).await.unwrap();
+    stream.write_all(b"\n").await.unwrap();
     loop {
         let mut message = String::new();
 
@@ -83,11 +86,10 @@ fn write_socket(mut stream: TcpStream, username: String) {
 
         let packet = raw_msg_to_packet(message);
 
-
         let serialized = serde_json::to_string(&packet).unwrap();
 
-        stream.write_all(serialized.as_bytes()).unwrap();
-        stream.write_all(b"\n").unwrap();
+        stream.write_all(serialized.as_bytes()).await.unwrap();
+        stream.write_all(b"\n").await.unwrap();
     }
 }
 

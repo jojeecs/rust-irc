@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::sync::{Arc};
-use std::sync::mpsc::{Receiver, Sender};
 use serde::{Deserialize, Serialize};
 use crate::UserPrivilege::{Member};
+use tokio::sync::mpsc::{Sender, Receiver};
 
 /// `ClientSession` holds information regarding a connection between client and server.
 ///
