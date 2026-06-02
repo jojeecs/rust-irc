@@ -4,3 +4,4 @@
 cpufeatures.json
 /common/target/
 /common/target/debug
+/server/users.json

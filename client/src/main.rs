@@ -1,7 +1,8 @@
-use std::fs::write;
 use std::io::{stdin};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use common::{ClientPacket};
+use std::time::Duration;
+use sha3::{Digest, Sha3_256};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use common::{ClientPacket, UserInfo};
 use common::ClientPacket::{ChatMessage, Connect, Disconnect, PrivateMessage};
 use tokio::net::{ TcpStream};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -15,12 +16,11 @@ async fn main() {
         write_stream.write_all(serde_json::to_string(&ClientPacket::IdentityRequest { id: 0 }).unwrap().as_bytes()).await.unwrap();
         write_stream.write_all(b"\n").await.unwrap();
 
-
         let mut reader = BufReader::new(read_stream);
 
         let response = handshake(&mut reader).await.unwrap();
 
-        write_stream.write_all(serde_json::to_string(&Connect {username: response}).unwrap().as_bytes()).await.unwrap();
+        write_stream.write_all(serde_json::to_string(&Connect {user: response}).unwrap().as_bytes()).await.unwrap();
         write_stream.write_all(b"\n").await.unwrap();
 
         tokio::spawn(async move {
@@ -35,27 +35,45 @@ async fn main() {
     }
 }
 
-async fn handshake(reader: &mut BufReader<OwnedReadHalf>) -> Option<String> {
+async fn handshake(reader: &mut BufReader<OwnedReadHalf>) -> Option<UserInfo> {
     let mut buf = String::new();
 
     let bytes = reader.read_line(&mut buf).await.unwrap();
+
 
     if bytes == 0 {
         eprintln!("Server shutdown while performing handshake.");
         return None;
     }
 
-    let mut response = String::new();
+    let mut username = String::new();
 
     print!("{}", buf);
 
-    stdin().read_line(&mut response).unwrap();
-    while !verify_username(&response) {
-        response.clear();
-        stdin().read_line(&mut response).unwrap();
+    stdin().read_line(&mut username).unwrap();
+    while !verify_username(&username) {
+        username.clear();
+        stdin().read_line(&mut username).unwrap();
     }
 
-    Some(response)
+    let mut password = String::new();
+
+    println!("Enter password for username: ");
+
+    stdin().read_line(&mut password).unwrap();
+
+    let mut hasher = Sha3_256::new();
+    hasher.update(password.as_bytes());
+    let hash = hasher.finalize();
+
+    let mut password_hash = String::new();
+
+    for byte in hash {
+        password_hash.push_str(format!("{:02x}", byte).as_str());
+    }
+    let user = UserInfo { username: username.clone(), password: password_hash  };
+
+    Some(user)
 }
 
 fn verify_username(username: &String) -> bool {
@@ -79,7 +97,7 @@ async fn read_socket(stream: OwnedReadHalf) {
 
         if byte_val == 0 {
             println!("Server shutting down.");
-            break;
+            std::process::exit(0);
         }
 
         let packet: ClientPacket = serde_json::from_str(&str_buffer).unwrap();
@@ -87,6 +105,17 @@ async fn read_socket(stream: OwnedReadHalf) {
         match packet {
             ChatMessage {contents} => {
                 println!(r"{}", contents.trim_ascii());
+            },
+            ClientPacket::IdentityInfo {information} => {
+                println!(r"{}", information.trim_ascii());
+            },
+            ClientPacket::ConnectionReject {reason} => {
+                println!("{reason}");
+                std::process::exit(0);
+            },
+            Disconnect => {
+                println!("Server shutting down.");
+                std::process::exit(0);
             }
             _ => {
                 println!("{packet:?}")
@@ -132,7 +161,6 @@ fn raw_msg_to_packet(raw_msg: String) -> ClientPacket {
     } else {
         return ChatMessage { contents: raw_msg };
     }
-
 
     Disconnect
 }

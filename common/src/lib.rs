@@ -9,7 +9,7 @@ use tokio::sync::mpsc::{Sender, Receiver};
 ///
 #[derive(Debug, Clone)]
 pub struct ClientSession {
-    pub sender: Sender<ServerEvent>,
+    pub sender: Arc<Sender<ServerEvent>>,
     pub client_id: ClientID,
 }
 
@@ -20,11 +20,16 @@ pub struct Client {
     pub privilege: UserPrivilege,
 }
 
+#[derive(Serialize, Deserialize, Debug, Eq, Clone)]
+pub struct UserInfo {
+    pub username: String,
+    pub password: String,
+}
+
 /// `ClientID` is a support struct for `Client` that holds additional information.
 /// This is mainly used for identifying `ClientSessions` in the server struct.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ClientID {
-    pub chat_tag: usize,
     pub username: String,
     pub id: usize,
 }
@@ -39,6 +44,11 @@ pub enum UserPrivilege {
 pub struct ServerState {
     pub clients: HashMap<Client, ClientSession>,
     pub receiver: Receiver<ServerEvent>,
+    pub db: ServerDB
+}
+
+pub struct ServerDB {
+    pub users: Vec<UserInfo>,
 }
 
 #[derive(Clone, Debug)]
@@ -50,18 +60,20 @@ pub struct Message {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum ClientPacket {
-    Connect { username: String },
+    Connect { user: UserInfo },
     ChatMessage { contents: String },
     PrivateMessage { to: String, contents: String },
     HTTPRequest {resource: String},
     IdentityRequest { id: usize},
+    IdentityInfo {information: String},
+    ConnectionReject {reason: String},
     Disconnect
 }
 
 #[derive(Debug)]
 pub enum ServerEvent {
-    ConnectionRequest { username: String, sender: Sender<ServerEvent>  },
-    ConnectionAccepted { client_id: ClientID },
+    ConnectionRequest { user: UserInfo, sender: Arc<Sender<ServerEvent>>  },
+    ConnectionAccepted { client_id: ClientID, user: Arc<UserInfo> },
     ConnectionRejected { reason: String },
     ChatMessageReceive { from: Arc<Client>, contents: String },
     Broadcast { contents: String },
@@ -70,35 +82,47 @@ pub enum ServerEvent {
     UserDisconnected { user: Arc<Client> },
     HTTPRequest {resource: String, sender: Arc<Sender<ServerEvent>>},
     HTTPResponse {status: String, contents: String, length: usize},
-    Error { message: String }
+    Error { message: String },
+    Shutdown,
 }
 
 impl ServerState {
     pub fn new(receiver: Receiver<ServerEvent>) -> ServerState {
-        ServerState { clients: HashMap::new(), receiver }
+        ServerState { clients: HashMap::new(), receiver, db: ServerDB::new()  }
     }
 }
 
+impl ServerDB {
+    pub fn new() -> ServerDB {
+        ServerDB { users: Vec::new() }
+    }
+}
 
 impl PartialEq for Client {
     fn eq(&self, other: &Self) -> bool {
-        self.client_id.id == other.client_id.id || (self.client_id.username == other.client_id.username && self.client_id.chat_tag == other.client_id.chat_tag)
+        self.client_id.id == other.client_id.id || (self.client_id.username == other.client_id.username)
+    }
+}
+
+impl PartialEq for UserInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.username == other.username
     }
 }
 
 impl Display for Client {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}#{}, ID: {}", self.client_id.username, self.client_id.chat_tag, self.client_id.id)
+        write!(f, "{}, ID: {}", self.client_id.username, self.client_id.id)
     }
 }
 
 impl Client {
     pub fn generate(username: &String, id: usize) -> Client {
-        let username = ClientID { username: username.to_string(), chat_tag: 0, id };
+        let username = ClientID { username: username.to_string(), id };
         Client { client_id: username, privilege: Member }
     }
 
     pub fn username_tag(&self) -> String {
-        format!("{}#{}", self.client_id.username, self.client_id.chat_tag).to_string()
+        format!("{}", self.client_id.username).to_string()
     }
 }
