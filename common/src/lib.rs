@@ -51,13 +51,6 @@ pub struct ServerDB {
     pub users: Vec<UserInfo>,
 }
 
-#[derive(Clone, Debug)]
-pub struct Message {
-    pub contents: String,
-    pub owner: Arc<Client>,
-    pub message_id: usize,
-}
-
 #[derive(Serialize, Deserialize, Debug)]
 pub enum ClientPacket {
     Connect { user: UserInfo },
