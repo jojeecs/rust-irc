@@ -1,23 +1,20 @@
-use common::ClientPacket::{ConnectionReject, Disconnect};
-use common::ServerEvent::{
-    Broadcast, ChatMessageReceive, ConnectionAccepted, ConnectionRejected, Error, HTTPResponse,
-    PrivateMessage, Shutdown,
-};
-use common::UserPrivilege::{Admin, Member};
-use common::{
-    Client, ClientID, ClientPacket, ClientSession, ServerDB, ServerEvent, ServerState, UserInfo,
-};
+use common::ClientPacket::{ConnectionRejected, Disconnect};
+use common::ServerEvent::{Message, ChatMessageReceive, ConnectionAccept, ConnectionReject, Error, PrivateMessage, Shutdown, UserCreation};
+use common::{ClientPacket, Session, ServerDB, ServerEvent, Server, LoginInfo, User, ConnectionResult};
 use rand::{Rng, rng};
 use std::collections::HashMap;
-use std::fs;
-use std::fs::OpenOptions;
+use std::fs::{OpenOptions};
 use std::io::{BufWriter, Write, stdin};
+use std::marker::PhantomData;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{Semaphore, mpsc};
+use turso::Connection;
+use common::ConnectionResult::{AcceptedCurrentUser, AcceptedNewUser, Rejected};
+
 #[deny(clippy::unwrap_used)]
 #[deny(clippy::expect_used)]
 #[deny(clippy::panic)]
@@ -36,7 +33,13 @@ async fn main() {
 
     let sender_reference = Arc::new(server_sender);
 
-    let server_state = handle_server_start(server_recv).await;
+    let server_state = match handle_server_start(server_recv).await {
+        Some(sv) => sv,
+        None => {
+            eprintln!("Error initializing server.");
+            return;
+        }
+    };
 
     let sender_ref = Arc::clone(&sender_reference);
 
@@ -70,7 +73,7 @@ async fn handle_new_connection(stream: TcpStream, server_sender: Arc<Sender<Serv
     }
 
     match serde_json::from_str::<ClientPacket>(&line) {
-        Ok(ClientPacket::IdentityRequest { .. }) => {
+        Ok(ClientPacket::SessionRequest) => {
             if let Err(e) = stream.write("Enter username: \n".as_bytes()).await {
                 eprintln!("Error writing username prompt: {}", e);
             }
@@ -91,9 +94,7 @@ async fn handle_new_connection(stream: TcpStream, server_sender: Arc<Sender<Serv
     let (reader_stream, mut writer_stream) = stream.into_inner().into_split();
 
     if byte_val == 0 {
-        println!(
-            "Client disconnected during handshake."
-        );
+        println!("Client disconnected during handshake.");
         return;
     }
 
@@ -107,17 +108,19 @@ async fn handle_new_connection(stream: TcpStream, server_sender: Arc<Sender<Serv
 
     let sender_ref = Arc::new(sender);
     match packet {
-        ClientPacket::Connect { user } => {
-            let user = UserInfo {
-                username: user.username.trim_ascii().to_string(),
-                password: user.password,
+        ClientPacket::LoginRequestPacket { username, password } => {
+            let login_info = LoginInfo {
+                username: username.trim_ascii().to_string(),
+                password,
             };
             if let Err(e) = server_sender
                 .send(ServerEvent::ConnectionRequest {
-                    user,
+                    login_details: login_info,
                     sender: Arc::clone(&sender_ref),
+                    ip_src: reader_stream.local_addr().unwrap().ip()
                 })
-                .await {
+                .await
+            {
                 eprintln!("Error sending info to server: {}", e);
             }
         }
@@ -126,18 +129,13 @@ async fn handle_new_connection(stream: TcpStream, server_sender: Arc<Sender<Serv
 
     loop {
         if let Some(response) = receiver.recv().await {
-            if let ConnectionAccepted { client_id, user } = response {
-                let client = Client {
-                    client_id: client_id.clone(),
-                    privilege: Member,
-                };
+            if let ConnectionAccept { user, session } = response {
 
-                let client_ref = Arc::new(client.clone());
                 tokio::spawn(async move {
                     reader_socket(
                         reader_stream,
                         Arc::clone(&server_sender),
-                        Arc::clone(&client_ref),
+                        user
                     )
                     .await;
                 });
@@ -145,25 +143,13 @@ async fn handle_new_connection(stream: TcpStream, server_sender: Arc<Sender<Serv
                 tokio::spawn(async move {
                     writer_socket(receiver, writer_stream).await;
                 });
-                sender_ref
-                    .send(ConnectionAccepted { client_id, user })
-                    .await
-                    .unwrap();
-            } else if let HTTPResponse {
-                status, contents, ..
-            } = response
-            {
-                let response = format!(
-                    "{status}\r\nLocation: {contents}\r\n\r\nContent-Type: text/plain; charset=utf-8"
-                );
-                if let Err(e) = writer_stream.write_all(response.as_bytes()).await {
-                    eprintln!("Error writing response to stream: {}", e);
-                    return;
-                }
-            } else if let ConnectionRejected { reason } = response {
-               if let Ok(serialized) = serde_json::to_string(&ConnectionReject {reason}) {
-                   let _ = writer_stream.write_all(serialized.as_bytes()).await;
-                   let _ = writer_stream.write_all(b"\n").await;
+            } else if let UserCreation {username, user_id} = response {
+
+            }
+            else if let ConnectionReject { reason } = response {
+                if let Ok(serialized) = serde_json::to_string(&ConnectionRejected { reason }) {
+                    let _ = writer_stream.write_all(serialized.as_bytes()).await;
+                    let _ = writer_stream.write_all(b"\n").await;
                 }
             }
             break;
@@ -174,7 +160,7 @@ async fn handle_new_connection(stream: TcpStream, server_sender: Arc<Sender<Serv
 async fn reader_socket(
     stream: OwnedReadHalf,
     server_sender: Arc<Sender<ServerEvent>>,
-    client: Arc<Client>,
+    user: User,
 ) {
     let mut stream = BufReader::new(stream);
     loop {
@@ -190,8 +176,9 @@ async fn reader_socket(
 
         if byte_val == 0 {
             if let Err(e) = server_sender
-                .send(ServerEvent::UserDisconnected { user: client })
-                .await {
+                .send(ServerEvent::UserDisconnected { user })
+                .await
+            {
                 eprintln!("Error sending disconnect packet to server: {}", e);
             }
             break;
@@ -205,7 +192,7 @@ async fn reader_socket(
             }
         };
 
-        let event = packet_to_event(packet, Arc::clone(&client));
+        let event = packet_to_event(packet, &user);
 
         if let Err(e) = server_sender.send(event).await {
             eprintln!("Error sending event to server: {}", e);
@@ -213,15 +200,15 @@ async fn reader_socket(
     }
 }
 
-fn packet_to_event(packet: ClientPacket, client: Arc<Client>) -> ServerEvent {
+fn packet_to_event(packet: ClientPacket, user: &User) -> ServerEvent {
     match packet {
-        ClientPacket::ChatMessage { contents } => ChatMessageReceive {
-            from: Arc::clone(&client),
+        ClientPacket::PublicMessage { contents } => ChatMessageReceive {
+            from: user.user_id,
             contents,
         },
         ClientPacket::PrivateMessage { to, contents, .. } => PrivateMessage {
             to,
-            from: Arc::clone(&client),
+            from: user.user_id,
             contents,
         },
         _ => Error {
@@ -234,7 +221,7 @@ async fn writer_socket(mut receiver: Receiver<ServerEvent>, mut stream: OwnedWri
     loop {
         if let Some(event) = receiver.recv().await {
             if let Ok(contents) = serde_json::to_string(&event_to_packet(event)) {
-                let _ =stream.write_all(contents.as_bytes()).await;
+                let _ = stream.write_all(contents.as_bytes()).await;
                 let _ = stream.write_all(b"\n").await;
             }
         }
@@ -243,14 +230,7 @@ async fn writer_socket(mut receiver: Receiver<ServerEvent>, mut stream: OwnedWri
 
 fn event_to_packet(server_event: ServerEvent) -> ClientPacket {
     match server_event {
-        Broadcast { contents } => ClientPacket::ChatMessage { contents },
-        ServerEvent::Message { contents } => ClientPacket::ChatMessage { contents },
-        ConnectionAccepted { client_id, .. } => ClientPacket::IdentityInfo {
-            information: format!(
-                "Assigned identity: {}, ID: {}",
-                client_id.username, client_id.id
-            ),
-        },
+        Message { contents } => ClientPacket::PublicMessage { contents },
         _ => Disconnect,
     }
 }
@@ -258,7 +238,7 @@ fn event_to_packet(server_event: ServerEvent) -> ClientPacket {
 async fn handle_server_shutdown(server_db: &ServerDB) {
     println!("Shutting down server.");
 
-    let as_json= match serde_json::to_string(&server_db.users) {
+    let as_json = match serde_json::to_string(&server_db.login_info_vec) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("Error parsing: {}", e);
@@ -281,15 +261,10 @@ async fn handle_server_shutdown(server_db: &ServerDB) {
     }
 }
 
-async fn handle_server_start(server_recv: Receiver<ServerEvent>) -> ServerState {
-    let mut server_state = ServerState::new(server_recv);
+async fn handle_server_start(server_recv: Receiver<ServerEvent>) -> Option<Server> {
+    let server = Server::new(server_recv).await;
 
-    let current_users: Vec<UserInfo> =
-        serde_json::from_str(&fs::read_to_string("./users.json").unwrap()).unwrap_or(Vec::new());
-
-    server_state.db.users = current_users;
-
-    server_state
+    Some(server)
 }
 
 async fn server_input_handler(server_sender: Arc<Sender<ServerEvent>>) {
@@ -297,7 +272,7 @@ async fn server_input_handler(server_sender: Arc<Sender<ServerEvent>>) {
         let mut cmd = String::new();
 
         if let Err(e) = stdin().read_line(&mut cmd) {
-            eprintln!("Error getting user input: {}", e);
+            eprintln!("Error getting login_details input: {}", e);
             continue;
         }
 
@@ -314,94 +289,85 @@ async fn server_input_handler(server_sender: Arc<Sender<ServerEvent>>) {
     }
 }
 
-async fn server_handler(mut server: ServerState) {
-    let server_identity = Arc::new(Client {
-        client_id: ClientID {
-            username: String::from("Server"),
-            id: 0,
-        },
-        privilege: Admin,
-    });
+async fn server_handler(mut server: Server) {
+    let server_identity = Arc::new(User { username: "Server".to_string(), user_id: 0 });
     loop {
         if let Some(event) = server.receiver.recv().await {
             match event {
-                ServerEvent::ConnectionRequest { user, sender } => {
-                    println!("Connection request from: {}", user.username.trim_ascii());
-                    let reference = Arc::new(user.clone());
-                    let db_ref = Arc::new(&server.db);
-                    let accepted = handle_client_connect(
-                        Arc::clone(&reference),
-                        sender,
-                        db_ref,
-                        &mut server.clients,
+                ServerEvent::ConnectionRequest { login_details, sender, ip_src } => {
+                    println!("Connection request from: {}", login_details.username.trim_ascii());
+                    let is_accepted = handle_client_connect(
+                        login_details,
+                        &mut server.db_conn
                     )
-                    .await;
-                    if accepted.is_some() && !server.db.users.contains(&user) {
-                        server.db.users.push(user);
-                    } else if accepted.is_none() {
-                        println!(
-                            "Invalid password passed for user: {}",
-                            user.username.trim_ascii()
-                        );
+                        .await;
+                    let session = Session::new(Arc::clone(&sender), ip_src, rng().next_u64() as usize, server.next_uid);
+                    match is_accepted {
+                        AcceptedCurrentUser { uid } => {
+                            let user = match server.load_user(uid).await {
+                                Some(u) => u,
+                                None => {
+                                    eprintln!("User does not exist.");
+                                    continue;
+                                }
+                            };
+                            println!("{user:?}");
+                        },
+                        AcceptedNewUser {username, password} => {
+                            server.add_new_user(username.clone(), password).await;
+                            if let Err(e) = sender.send(UserCreation {username: username.clone(), user_id: server.next_uid}).await {
+                                eprintln!("Error sending user info: {}", e);
+                            }
+                            // server.add_new_session(user, session);
+                        },
+                        ConnectionResult::Rejected {reason} => {
+
+                        }
                     }
                 }
                 ChatMessageReceive { from, contents } => {
-                    handle_broadcast(contents, from, &server.clients.values().collect::<Vec<_>>())
+                    let uid_map = &server.user_id_map;
+                    let user = match uid_map.get(&from) {
+                        Some(user) => &user.0,
+                        None => {
+                            continue;
+                        }
+                    };
+                    handle_broadcast(contents, user, &server.user_id_map.values().collect::<Vec<_>>())
                         .await;
                 }
                 ServerEvent::UserDisconnected { user } => {
-                    println!("{} has disconnected", user.client_id.username);
+                    println!("{} has disconnected", user.username);
                     handle_client_disconnect(
-                        user,
+                        &user,
                         Arc::clone(&server_identity),
-                        &mut server.clients,
+                        &mut server.user_id_map,
                     )
                     .await;
                 }
                 PrivateMessage { to, from, contents } => {
-                    let username = match to
-                        .split("#")
-                        .collect::<Vec<_>>()
-                        .get(0) {
-                        Some(u) => u,
-                        None => {
-                            eprintln!("Error");
-                            continue;
-                        }
-                    }.to_string();
+                    let uid_map = &server.user_id_map;
 
-                    match find_user(&username, &server.clients) {
+                    match uid_map.get(&from) {
                         Some(client) => {
-                            handle_pm(&client, from, contents, &server.clients).await;
+                            handle_pm(&client.0, &client.0, contents, uid_map).await;
                         }
                         None => {
-                            if let Some(client) = server.clients.get(&from) {
-                                if let Err(e) = client.sender.send(Error {
-                                    message: String::from("User not found"),
-                                }).await {
+                            if let Some(client) = server.user_id_map.get(&0) {
+                                if let Err(e) = client
+                                    .1.sender
+                                    .send(Error {
+                                        message: String::from("User not found"),
+                                    })
+                                    .await
+                                {
                                     eprintln!("Error sending message: {}", e);
                                 }
                             }
                         }
                     }
                 }
-                ServerEvent::HTTPRequest { sender, .. } => {
-                    let contents = "https://jojeecs.github.io/portfolio/".to_string();
-                    let length = contents.len();
-                    let status = String::from("HTTP/1.1 307 Temporary Redirect");
-
-                    if let Err(e) = sender
-                        .send(HTTPResponse {
-                            status,
-                            contents,
-                            length,
-                        })
-                        .await {
-                        eprintln!("Error sending HTTP Response: {}", e);
-                    }
-                }
                 Shutdown => {
-                    handle_server_shutdown(&server.db).await;
                     std::process::exit(0);
                 }
                 _ => {}
@@ -410,131 +376,52 @@ async fn server_handler(mut server: ServerState) {
     }
 }
 
-fn find_user<'a>(
-    username: &String,
-    clients: &'a HashMap<Client, ClientSession>,
-) -> Option<&'a Client> {
-    for client in clients.keys().collect::<Vec<_>>() {
-        if client.client_id.username.eq(username) {
-            return Some(&client);
-        }
-    }
-
-    None
-}
 
 async fn handle_pm(
-    to: &Client,
-    from: Arc<Client>,
+    to: &User,
+    from: &User,
     message: String,
-    current_users: &HashMap<Client, ClientSession>,
+    current_users: &HashMap<usize, (User, Session)>,
 ) {
-    let formatted = format!("From {}: {}", from.client_id.username, message);
-    if let Some(user) = current_users.get(to) {
-        if let Err(e) = user.sender.send(ServerEvent::Message {
-            contents: formatted,
-        }).await {
+    let formatted = format!("From {}: {}", from.username, message);
+    if let Some((_, session)) = current_users.get(&to.user_id) {
+        if let Err(e) = session
+            .sender
+            .send(Message {
+                contents: formatted,
+            })
+            .await
+        {
             eprintln!("Error sending message: {}", e);
         }
     }
 }
 
-fn assign_identity(
-    user: &UserInfo,
-    current_ids: &HashMap<Client, ClientSession>,
-) -> Option<Client> {
-    let user_id = ClientID {
-        username: user.username.trim_ascii().to_string(),
-        id: rng().next_u64() as usize,
-    };
-    let id = Client {
-        client_id: user_id,
-        privilege: Member,
-    };
+fn create_new_user(
+    username: String,
+    uid_to_assign: usize,
+) -> Option<User> {
 
-    if current_ids.contains_key(&id) {
-        return assign_identity(&user, current_ids);
-    }
-
-    Some(id)
+    None
 }
 
 async fn handle_client_connect(
-    user: Arc<UserInfo>,
-    sender: Arc<Sender<ServerEvent>>,
-    server_db: Arc<&ServerDB>,
-    clients: &mut HashMap<Client, ClientSession>,
-) -> Option<bool> {
-    if server_db.users.contains(&user) {
-        let other = match server_db
-            .users
-            .iter()
-            .find(|other| other.username == user.username) {
-            Some(u) => u,
-            None => {
-                eprintln!("Error finding other user.");
-                return None;
-            }
-        };
-        if !other.password.eq_ignore_ascii_case(&user.password) {
-            if let Err(e) = sender
-                .send(ConnectionRejected {
-                    reason: "Invalid Password".to_string(),
-                })
-                .await {
-                eprintln!("Error sending message: {}", e);
-            }
-            return None;
-        }
-    }
-    let new_client = assign_identity(&user, &clients);
-    if new_client.is_some() {
-        let client = match new_client {
-            Some(c) => c,
-            None => {
-                eprintln!("Unknown error in identity assignment");
-                return None;
-            }
-        };
-        let id = client.client_id.clone();
-        if let Err(e) = sender
-            .send(ConnectionAccepted {
-                client_id: id.clone(),
-                user,
-            })
-            .await {
-            eprintln!("Error in sending connection accepted packet to client: {}", e);
-        }
-        clients.insert(
-            client,
-            ClientSession {
-                client_id: id,
-                sender,
-            },
-        );
-        Some(true)
-    } else {
-        if let Err(e) = sender
-            .send(ConnectionRejected {
-                reason: "Incorrect username formatting".to_string(),
-            })
-            .await {
-            eprintln!("Error sending connection rejected packet to client: {}", e);
-        }
-        None
-    }
+    login_details: LoginInfo,
+    clients: &mut Connection,
+) -> ConnectionResult {
+    AcceptedNewUser {username: login_details.username, password: login_details.password}
 }
 async fn handle_client_disconnect(
-    client: Arc<Client>,
-    server_identity: Arc<Client>,
-    clients: &mut HashMap<Client, ClientSession>,
+    user: &User,
+    server_identity: Arc<User>,
+    clients: &mut HashMap<usize, (User, Session)>,
 ) {
-    if let None = clients.remove(&client) {
+    if let None = clients.remove(&user.user_id) {
         eprintln!("Could not remove client from client list.");
     }
     handle_broadcast(
-        format!("{} has disconnected.", client.client_id.username),
-        server_identity,
+        format!("{} has disconnected.", user.username),
+        &server_identity,
         &clients.values().collect::<Vec<_>>(),
     )
     .await;
@@ -542,8 +429,8 @@ async fn handle_client_disconnect(
 
 async fn handle_broadcast(
     contents: String,
-    originator: Arc<Client>,
-    clients: &Vec<&ClientSession>,
+    originator: &User,
+    clients: &Vec<&(User, Session)>,
 ) {
     if contents.is_empty() {
         return;
@@ -551,26 +438,27 @@ async fn handle_broadcast(
 
     let formatted;
 
-    if originator.client_id.id != 0 {
+    if originator.user_id != 0 {
         formatted = format!(
             "{}: {}",
-            originator.client_id.username,
+            originator.username,
             contents.trim_ascii()
         );
     } else {
         formatted = format!("SERVER: {}", contents.trim_ascii());
     }
 
-    for session in clients {
-        if session.client_id.id == originator.client_id.id {
+    for (user, session) in clients {
+        if originator.user_id == user.user_id {
             continue;
         } else {
             if let Err(e) = session
                 .sender
-                .send(Broadcast {
+                .send(Message {
                     contents: formatted.clone(),
                 })
-                .await {
+                .await
+            {
                 eprintln!("Error sending broadcast to client: {}", e);
             }
         }

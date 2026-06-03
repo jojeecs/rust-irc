@@ -1,8 +1,8 @@
 use std::io::{stdin};
 use sha3::{Digest, Sha3_256};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use common::{ClientPacket, UserInfo};
-use common::ClientPacket::{ChatMessage, Connect, Disconnect, PrivateMessage};
+use common::{ClientPacket};
+use common::ClientPacket::{PublicMessage, Disconnect, PrivateMessage, LoginRequestPacket};
 use tokio::net::{ TcpStream};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
@@ -12,7 +12,7 @@ async fn main() {
     if let Ok(stream) = str {
         let (read_stream, mut write_stream) = stream.into_split();
 
-        write_stream.write_all(serde_json::to_string(&ClientPacket::IdentityRequest { id: 0 }).unwrap().as_bytes()).await.unwrap();
+        write_stream.write_all(serde_json::to_string(&ClientPacket::SessionRequest).unwrap().as_bytes()).await.unwrap();
         write_stream.write_all(b"\n").await.unwrap();
 
         let mut reader = BufReader::new(read_stream);
@@ -25,7 +25,7 @@ async fn main() {
 
         let response = response.unwrap();
 
-        if let Ok(serialized) = serde_json::to_string(&Connect {user: response}) {
+        if let Ok(serialized) = serde_json::to_string(&LoginRequestPacket {username: response.0, password: response.1}) {
             let _ = write_stream.write_all(serialized.as_bytes()).await;
             let _ =write_stream.write_all(b"\n").await;
         }
@@ -42,7 +42,7 @@ async fn main() {
     }
 }
 
-async fn handshake(reader: &mut BufReader<OwnedReadHalf>) -> Option<UserInfo> {
+async fn handshake(reader: &mut BufReader<OwnedReadHalf>) -> Option<(String, String)> {
     let mut buf = String::new();
 
     if let Err(e) = reader.read_line(&mut buf).await {
@@ -88,9 +88,7 @@ async fn handshake(reader: &mut BufReader<OwnedReadHalf>) -> Option<UserInfo> {
         password_hash.push_str(&format!("{:02x}", byte));
     }
 
-    let user = UserInfo { username: username.clone(), password: password_hash  };
-
-    Some(user)
+    Some((username, password_hash))
 }
 
 fn verify_username(username: &String) -> bool {
@@ -134,13 +132,10 @@ async fn read_socket(stream: OwnedReadHalf) {
         };
 
         match packet {
-            ChatMessage {contents} => {
+            PublicMessage {contents} => {
                 println!(r"{}", contents.trim_ascii());
             },
-            ClientPacket::IdentityInfo {information} => {
-                println!(r"{}", information.trim_ascii());
-            },
-            ClientPacket::ConnectionReject {reason} => {
+            ClientPacket::ConnectionRejected {reason} => {
                 println!("{reason}");
                 std::process::exit(0);
             },
@@ -192,7 +187,7 @@ fn raw_msg_to_packet(raw_msg: String) -> ClientPacket {
             }
         }
     }else {
-        return ChatMessage { contents: raw_msg };
+        return PublicMessage { contents: raw_msg };
     }
 
     Disconnect
