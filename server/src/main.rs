@@ -3,11 +3,10 @@ use common::ServerEvent::{
     ChatMessageReceive, ConnectionAccept, ConnectionReject, Error, Message, PrivateMessage,
     Shutdown, UsernameCheck, UsernameResponse,
 };
-use common::{ClientPacket, LoginInfo, Server, ServerDB, ServerEvent, Session, User};
+use common::{ClientPacket, LoginInfo, Server, ServerEvent, Session, User};
 use rand::{Rng, rng};
 use std::collections::HashMap;
-use std::fs::OpenOptions;
-use std::io::{BufWriter, Write, stdin};
+use std::io::{stdin};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -250,32 +249,6 @@ fn event_to_packet(server_event: ServerEvent) -> ClientPacket {
     match server_event {
         Message { contents } => ClientPacket::PublicMessage { contents },
         _ => Disconnect,
-    }
-}
-
-async fn handle_server_shutdown(server_db: &ServerDB) {
-    println!("Shutting down server.");
-
-    let as_json = match serde_json::to_string(&server_db.login_info_vec) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("Internal server error parsing: {}", e);
-            return;
-        }
-    };
-
-    let file = match OpenOptions::new().write(true).open("./users.json") {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("Internal server error opening users.json: {}", e);
-            return;
-        }
-    };
-
-    let mut writer = BufWriter::new(file);
-
-    if let Err(e) = writer.write_all(as_json.as_bytes()) {
-        eprintln!("Internal server error writing to users.json: {}", e);
     }
 }
 

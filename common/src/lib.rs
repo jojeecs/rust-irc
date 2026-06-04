@@ -209,7 +209,7 @@ impl Server {
         let command = format!("SELECT * FROM users WHERE username = '{}'", username);
         let result = self.run_query(command).await.unwrap_or_else(|| Vec::new());
 
-        while let Some(row) = result.iter().next() {
+        while let Some(_) = result.iter().next() {
             return true;
         }
         false

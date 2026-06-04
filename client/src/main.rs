@@ -128,7 +128,7 @@ async fn main() {
 }
 
 fn init_user(username: String, new: bool) -> Option<LoginInfo> {
-    let mut prompt = String::new();
+    let prompt ;
     if new {
         prompt = "Enter password for new account: ".to_string()
     } else {
