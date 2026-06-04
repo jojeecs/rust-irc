@@ -1,9 +1,9 @@
 use common::ClientPacket::{ConnectionRejected, Disconnect, InitialResponse};
-use common::ConnectionResult::{AcceptedCurrentUser, AcceptedNewUser, Rejected};
-use common::ServerEvent::{ChatMessageReceive, ConnectionAccept, ConnectionReject, Error, Message, PrivateMessage, Shutdown, UsernameCheck, UsernameResponse};
-use common::{
-    ClientPacket, LoginInfo, Server, ServerDB, ServerEvent, Session, User,
+use common::ServerEvent::{
+    ChatMessageReceive, ConnectionAccept, ConnectionReject, Error, Message, PrivateMessage,
+    Shutdown, UsernameCheck, UsernameResponse,
 };
+use common::{ClientPacket, LoginInfo, Server, ServerDB, ServerEvent, Session, User};
 use rand::{Rng, rng};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
@@ -69,31 +69,40 @@ async fn handle_new_connection(stream: TcpStream, server_sender: Arc<Sender<Serv
     let mut line = String::new();
 
     if let Err(e) = stream.read_line(&mut line).await {
-        eprintln!("Internal server error reading stream during handshake: {}", e);
+        eprintln!(
+            "Internal server error reading stream during handshake: {}",
+            e
+        );
         return;
     }
 
     match serde_json::from_str::<ClientPacket>(&line) {
-        Ok(ClientPacket::InitialRequest {username}) => {
-            loop {
-                if let Err(e) = server_sender.send(UsernameCheck { username: username.clone(), sender: Arc::clone(&sender_ref) }).await {
-                    eprintln!("Internal server error: {}", e);
-                }
-                while let Some(response) = receiver.recv().await {
-                    match response {
-                        UsernameResponse { username, new_user } => {
-                            if let Ok(serialized) = serde_json::to_string(&InitialResponse { username, new_user }) {
-                                let _ = stream.write_all(serialized.as_bytes()).await;
-                                let _ = stream.write_all(b"\n").await;
-                                break;
-                            }
-                        },
-                        _ => {}
-                    }
-                }
-                break;
+        Ok(ClientPacket::InitialRequest { username }) => loop {
+            if let Err(e) = server_sender
+                .send(UsernameCheck {
+                    username: username.clone(),
+                    sender: Arc::clone(&sender_ref),
+                })
+                .await
+            {
+                eprintln!("Internal server error: {}", e);
             }
-        }
+            while let Some(response) = receiver.recv().await {
+                match response {
+                    UsernameResponse { username, new_user } => {
+                        if let Ok(serialized) =
+                            serde_json::to_string(&InitialResponse { username, new_user })
+                        {
+                            let _ = stream.write_all(serialized.as_bytes()).await;
+                            let _ = stream.write_all(b"\n").await;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            break;
+        },
         _ => {}
     }
 
@@ -121,7 +130,6 @@ async fn handle_new_connection(stream: TcpStream, server_sender: Arc<Sender<Serv
             return;
         }
     };
-    println!("{line}");
 
     match packet {
         ClientPacket::LoginRequestPacket { username, password } => {
@@ -145,8 +153,7 @@ async fn handle_new_connection(stream: TcpStream, server_sender: Arc<Sender<Serv
 
     loop {
         if let Some(response) = receiver.recv().await {
-            if let ConnectionAccept { user, session } = response {
-                
+            if let ConnectionAccept { user, .. } = response {
                 tokio::spawn(async move {
                     reader_socket(reader_stream, Arc::clone(&server_sender), user).await;
                 });
@@ -187,7 +194,10 @@ async fn reader_socket(
                 .send(ServerEvent::UserDisconnected { user })
                 .await
             {
-                eprintln!("Internal server error sending disconnect packet to server: {}", e);
+                eprintln!(
+                    "Internal server error sending disconnect packet to server: {}",
+                    e
+                );
             }
             break;
         }
@@ -287,7 +297,10 @@ async fn server_input_handler(server_sender: Arc<Sender<ServerEvent>>) {
         match cmd.trim_ascii() {
             "/shutdown" => {
                 if let Err(e) = server_sender.send(Shutdown).await {
-                    eprintln!("Internal server error sending shutdown signal to server: {}", e);
+                    eprintln!(
+                        "Internal server error sending shutdown signal to server: {}",
+                        e
+                    );
                     continue;
                 }
                 break;
@@ -322,12 +335,18 @@ async fn server_handler(mut server: Server) {
                         login_details.username.trim_ascii()
                     );
                     match server
-                        .create_new_user(login_details.username.clone(), login_details.password.clone())
+                        .create_new_user(
+                            login_details.username.clone(),
+                            login_details.password.clone(),
+                        )
                         .await
                     {
                         Some(user) => {
                             let user_arc = Arc::new(user);
-                            server.user_id_map.insert(user_arc.user_id, (Arc::clone(&user_arc), Arc::clone(&session_arc)));
+                            server.user_id_map.insert(
+                                user_arc.user_id,
+                                (Arc::clone(&user_arc), Arc::clone(&session_arc)),
+                            );
                             if let Err(e) = sender
                                 .send(ConnectionAccept {
                                     user: Arc::clone(&user_arc),
@@ -340,8 +359,13 @@ async fn server_handler(mut server: Server) {
                             }
                         }
                         None => {
-                            if !server.is_correct_password(&login_details).await {
-                                if let Err(e) = sender.send(ConnectionReject {reason: "Incorrect password".to_string()}).await {
+                            if !server.verify_credentials(&login_details).await {
+                                if let Err(e) = sender
+                                    .send(ConnectionReject {
+                                        reason: "Incorrect password".to_string(),
+                                    })
+                                    .await
+                                {
                                     eprintln!("Internal server error sending message: {}", e);
                                 }
                                 continue;
@@ -357,7 +381,10 @@ async fn server_handler(mut server: Server) {
                                 }
                             };
                             let user_arc = Arc::new(user);
-                            server.user_id_map.insert(user_arc.user_id, (Arc::clone(&user_arc), Arc::clone(&session_arc)));
+                            server.user_id_map.insert(
+                                user_arc.user_id,
+                                (Arc::clone(&user_arc), Arc::clone(&session_arc)),
+                            );
                             if let Err(e) = sender
                                 .send(ConnectionAccept {
                                     user: Arc::clone(&user_arc),
@@ -365,7 +392,10 @@ async fn server_handler(mut server: Server) {
                                 })
                                 .await
                             {
-                                eprintln!("Internal server error in sending connection accept packet: {}", e);
+                                eprintln!(
+                                    "Internal server error in sending connection accept packet: {}",
+                                    e
+                                );
                                 continue;
                             }
                         }
@@ -397,29 +427,18 @@ async fn server_handler(mut server: Server) {
                 }
                 PrivateMessage { to, from, contents } => {
                     let uid_map = &server.user_id_map;
-
-                    match uid_map.get(&from) {
-                        Some(client) => {
-                            handle_pm(&client.0, &client.0, contents, uid_map).await;
-                        }
+                    let user_from = match server.user_id_map.get(&from) {
+                        Some(u) => u,
                         None => {
-                            if let Some(client) = server.user_id_map.get(&0) {
-                                if let Err(e) = client
-                                    .1
-                                    .sender
-                                    .send(Error {
-                                        message: String::from("User not found"),
-                                    })
-                                    .await
-                                {
-                                    eprintln!("Internal server error sending message: {}", e);
-                                }
-                            }
+                            continue;
                         }
+                    };
+                    if let Some(user_to) = server.find_user_from_username(to).await {
+                        handle_pm(&user_to, &user_from.0, contents, uid_map).await;
                     }
-                },
+                }
                 UsernameCheck { username, sender } => {
-                    let mut new_user;
+                    let new_user;
                     match server.find_user_from_username(username.clone()).await {
                         Some(_) => {
                             new_user = false;
@@ -476,7 +495,11 @@ async fn handle_client_disconnect(
     .await;
 }
 
-async fn handle_broadcast(contents: String, originator: &User, clients: &Vec<&(Arc<User>, Arc<Session>)>) {
+async fn handle_broadcast(
+    contents: String,
+    originator: &User,
+    clients: &Vec<&(Arc<User>, Arc<Session>)>,
+) {
     if contents.is_empty() {
         return;
     }

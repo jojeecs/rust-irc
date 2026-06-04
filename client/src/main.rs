@@ -1,8 +1,8 @@
-use common::{ClientPacket, LoginInfo};
+use cliclack::{input, password, select};
 use common::ClientPacket::{Disconnect, LoginRequestPacket, PrivateMessage, PublicMessage};
+use common::{ClientPacket, LoginInfo};
 use sha3::{Digest, Sha3_256};
 use std::io::stdin;
-use cliclack::{confirm, input, password, select};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -18,7 +18,8 @@ async fn main() {
             let has_account = match select("Login or create account: ")
                 .item("new", "Create new account", "")
                 .item("existing", "Login", "")
-                .interact() {
+                .interact()
+            {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("Error while selecting login method: {}", e);
@@ -29,7 +30,7 @@ async fn main() {
             match has_account {
                 "new" => {
                     username = get_username("What would you like your username to be?");
-                },
+                }
                 "existing" => {
                     username = get_username("Enter username");
                 }
@@ -38,7 +39,9 @@ async fn main() {
                 }
             }
 
-            if let Ok(serialized) = serde_json::to_string(&ClientPacket::InitialRequest { username }) {
+            if let Ok(serialized) =
+                serde_json::to_string(&ClientPacket::InitialRequest { username })
+            {
                 let _ = write_stream.write_all(serialized.as_bytes()).await;
                 let _ = write_stream.write_all(b"\n").await;
             } else {
@@ -71,6 +74,7 @@ async fn main() {
 
             match packet {
                 ClientPacket::InitialResponse { username, new_user } => {
+                    println!("{new_user}");
                     if new_user && has_account.eq("existing") {
                         let restart = match select("That user does not exist! Would you like to create an account with that name, or restart?")
                             .item("create", "Create account", "")
@@ -82,23 +86,30 @@ async fn main() {
                                 continue;
                             }
                         };
-                        if restart.eq("restart") {continue;}
-                    }
-                        let login_info = match init_user(username, new_user) {
-                            Some(l) => l,
-                            None => {
-                                eprintln!("Error initiating new user information.");
-                                continue;
-                            }
-                        };
-
-                        if let Ok(serialized) = serde_json::to_string(&LoginRequestPacket {username: login_info.username, password: login_info.password}) {
-                            let _ = write_stream.write_all(serialized.as_bytes()).await;
-                            let _ = write_stream.write_all(b"\n").await;
-                            break;
+                        if restart.eq("restart") {
+                            continue;
                         }
-                },
-                _ => {eprintln!("Received incorrect response from server, please try again later."); return;}
+                    }
+                    let login_info = match init_user(username, new_user) {
+                        Some(l) => l,
+                        None => {
+                            eprintln!("Error initiating new user information.");
+                            continue;
+                        }
+                    };
+                    if let Ok(serialized) = serde_json::to_string(&LoginRequestPacket {
+                        username: login_info.username,
+                        password: login_info.password,
+                    }) {
+                        let _ = write_stream.write_all(serialized.as_bytes()).await;
+                        let _ = write_stream.write_all(b"\n").await;
+                        break;
+                    }
+                }
+                _ => {
+                    eprintln!("Received incorrect response from server, please try again later.");
+                    return;
+                }
             }
         }
 
@@ -130,7 +141,7 @@ fn init_user(username: String, new: bool) -> Option<LoginInfo> {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("Error taking password input: {}", e);
-                continue;
+                break;
             }
         };
         if new {
@@ -149,10 +160,10 @@ fn init_user(username: String, new: bool) -> Option<LoginInfo> {
                 continue;
             }
         } else {
+            pass = password_str;
             break;
         }
     }
-
     hasher.update(pass);
     let hash = hasher.finalize();
 
@@ -162,30 +173,25 @@ fn init_user(username: String, new: bool) -> Option<LoginInfo> {
         password_hash.push_str(&format!("{:02x}", byte));
     }
 
-    Some(LoginInfo { username, password: password_hash })
+    Some(LoginInfo {
+        username,
+        password: password_hash,
+    })
 }
 
 fn get_username(prompt: &str) -> String {
     let mut username = String::new();
-    username = match input(&prompt)
-        .interact() {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Error in taking username: {}", e);
-            return String::new();
-        }
-    };
 
-    while !verify_username(&username) {
+    loop {
         username.clear();
-        username = match input(&prompt)
-            .interact() {
+        username = match input(&prompt).interact() {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Error in taking username: {}", e);
                 return String::new();
             }
         };
+        if verify_username(&username) {break}
     }
 
     username
