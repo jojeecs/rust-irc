@@ -11,3 +11,4 @@ sha3 = "0.12.0"
 rpassword = "7.5.4"
 cliclack = "0.5.4"
 log = "0.4.30"
+clavis = { git = "https://github.com/pyrohost/clavis" }

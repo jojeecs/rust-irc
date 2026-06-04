@@ -3,16 +3,22 @@ use common::ClientPacket::{Disconnect, LoginRequestPacket, PrivateMessage, Publi
 use common::{ClientPacket, LoginInfo};
 use sha3::{Digest, Sha3_256};
 use std::io::stdin;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use clavis::{EncryptedPacket, EncryptedReader, EncryptedStream, EncryptedWriter};
+use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
 #[tokio::main]
 async fn main() {
     let str = TcpStream::connect("127.0.0.1:8080").await;
     if let Ok(stream) = str {
-        let (read_stream, mut write_stream) = stream.into_split();
-        let mut reader = BufReader::new(read_stream);
+        let encrypted = match EncryptedStream::new(stream, None).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error encyrpting stream: {}", e);
+                return;
+            }
+        };
+        let (mut read_stream, mut write_stream) = encrypted.split();
         loop {
             let mut username = String::new();
             let has_account = match select("Login or create account: ")
@@ -39,19 +45,13 @@ async fn main() {
                 }
             }
 
-            if let Ok(serialized) =
-                serde_json::to_string(&ClientPacket::InitialRequest { username })
-            {
-                let _ = write_stream.write_all(serialized.as_bytes()).await;
-                let _ = write_stream.write_all(b"\n").await;
-            } else {
-                eprintln!("Error serializing session request packet");
-                continue;
+
+            if let Err(e) = write_stream.write_packet(&ClientPacket::InitialRequest {username}).await {
+                eprintln!("Error sending packet: {}", e);
+                return;
             }
 
-            let mut response = String::new();
-
-            let byte_val = match reader.read_line(&mut response).await {
+            let packet: ClientPacket = match read_stream.read_packet().await {
                 Ok(b) => b,
                 Err(e) => {
                     eprintln!("Error reading server response: {}", e);
@@ -59,22 +59,9 @@ async fn main() {
                 }
             };
 
-            if byte_val == 0 {
-                println!("Server shutdown during handshake.");
-                return;
-            }
-
-            let packet: ClientPacket = match serde_json::from_str(&response) {
-                Ok(p) => p,
-                Err(e) => {
-                    eprintln!("Error deserializing packet from stream: {}", e);
-                    return;
-                }
-            };
 
             match packet {
                 ClientPacket::InitialResponse { username, new_user } => {
-                    println!("{new_user}");
                     if new_user && has_account.eq("existing") {
                         let restart = match select("That user does not exist! Would you like to create an account with that name, or restart?")
                             .item("create", "Create account", "")
@@ -97,14 +84,10 @@ async fn main() {
                             continue;
                         }
                     };
-                    if let Ok(serialized) = serde_json::to_string(&LoginRequestPacket {
-                        username: login_info.username,
-                        password: login_info.password,
-                    }) {
-                        let _ = write_stream.write_all(serialized.as_bytes()).await;
-                        let _ = write_stream.write_all(b"\n").await;
-                        break;
+                    if let Err(e) = write_stream.write_packet(&LoginRequestPacket {username: login_info.username, password: login_info.password}).await {
+                        eprintln!("Error sending login info to server: {}", e);
                     }
+                    break;
                 }
                 _ => {
                     eprintln!("Received incorrect response from server, please try again later.");
@@ -118,7 +101,7 @@ async fn main() {
         });
 
         tokio::spawn(async move {
-            read_socket(reader.into_inner()).await;
+            read_socket(read_stream).await;
         })
         .await
         .unwrap();
@@ -135,13 +118,13 @@ fn init_user(username: String, new: bool) -> Option<LoginInfo> {
         prompt = "Enter password: ".to_string();
     }
     let mut hasher = Sha3_256::new();
-    let mut pass = String::new();
+    let pass;
     loop {
         let password_str = match password(&prompt).mask('*').interact() {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("Error taking password input: {}", e);
-                break;
+                return None;
             }
         };
         if new {
@@ -208,28 +191,12 @@ fn verify_username(username: &String) -> bool {
     true
 }
 
-async fn read_socket(stream: OwnedReadHalf) {
-    let mut stream = BufReader::new(stream);
+async fn read_socket(mut stream: EncryptedReader<ReadHalf<TcpStream>>) {
     loop {
-        let mut str_buffer = String::new();
-
-        let byte_val = match stream.read_line(&mut str_buffer).await {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("Error reading from stream: {}", e);
-                continue;
-            }
-        };
-
-        if byte_val == 0 {
-            println!("Server shutting down.");
-            std::process::exit(0);
-        }
-
-        let packet: ClientPacket = match serde_json::from_str(&str_buffer) {
+        let packet: ClientPacket = match stream.read_packet().await {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("Error parsing packet: {}", e);
+                eprintln!("Error reading packet: {}", e);
                 continue;
             }
         };
@@ -253,7 +220,7 @@ async fn read_socket(stream: OwnedReadHalf) {
     }
 }
 
-async fn write_socket(mut stream: OwnedWriteHalf) {
+async fn write_socket(mut stream: EncryptedWriter<WriteHalf<TcpStream>>) {
     loop {
         let mut message = String::new();
 
@@ -265,10 +232,10 @@ async fn write_socket(mut stream: OwnedWriteHalf) {
 
         let packet = raw_msg_to_packet(message.clone());
 
-        if let Ok(serialized) = serde_json::to_string(&packet) {
-            let _ = stream.write_all(serialized.as_bytes()).await;
-            let _ = stream.write_all(b"\n").await;
+        if let Err(e) = stream.write_packet(&packet).await {
+            eprintln!("Error sending packet: {}", e);
         }
+
         if message.trim_ascii().eq("/exit") {
             std::process::exit(0);
         }

@@ -1,15 +1,13 @@
 use common::ClientPacket::{ConnectionRejected, Disconnect, InitialResponse};
-use common::ServerEvent::{
-    ChatMessageReceive, ConnectionAccept, ConnectionReject, Error, Message, PrivateMessage,
-    Shutdown, UsernameCheck, UsernameResponse,
-};
+use common::ServerEvent::{ChatMessageReceive, ConnectionAccept, ConnectionReject, Error, Message, PrivateMessage, Shutdown, UserDisconnected, UsernameCheck, UsernameResponse};
 use common::{ClientPacket, LoginInfo, Server, ServerEvent, Session, User};
 use rand::{Rng, rng};
 use std::collections::HashMap;
 use std::io::{stdin};
+use std::net::IpAddr;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use clavis::{EncryptedPacket, EncryptedReader, EncryptedStream, EncryptedWriter};
+use tokio::io::{ ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{Semaphore, mpsc};
@@ -53,30 +51,38 @@ async fn main() {
     loop {
         if let Ok((socket, _)) = listener.accept().await {
             let sender = Arc::clone(&sender_reference);
+            let ip_src = socket.local_addr().unwrap().ip();
+            let encrypted_socket = match EncryptedStream::new(socket, None).await {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Error encrypting socket: {}", e);
+                    continue;
+                }
+            };
             tokio::spawn(async move {
-                handle_new_connection(socket, sender).await;
+                handle_new_connection(encrypted_socket, sender, ip_src).await;
             });
         }
     }
 }
 
-async fn handle_new_connection(stream: TcpStream, server_sender: Arc<Sender<ServerEvent>>) {
+async fn handle_new_connection(mut stream: EncryptedStream<TcpStream>, server_sender: Arc<Sender<ServerEvent>>, ip_src: IpAddr) {
     let (sender, mut receiver) = mpsc::channel::<ServerEvent>(100);
     let sender_ref = Arc::new(sender);
-    let mut stream = BufReader::new(stream);
 
-    let mut line = String::new();
+    let packet: ClientPacket = match stream.read_packet().await {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!(
+                "Internal server error reading stream during handshake: {}",
+                e
+            );
+            return;
+        }
+    };
 
-    if let Err(e) = stream.read_line(&mut line).await {
-        eprintln!(
-            "Internal server error reading stream during handshake: {}",
-            e
-        );
-        return;
-    }
-
-    match serde_json::from_str::<ClientPacket>(&line) {
-        Ok(ClientPacket::InitialRequest { username }) => loop {
+    match packet {
+        ClientPacket::InitialRequest { username } => {
             if let Err(e) = server_sender
                 .send(UsernameCheck {
                     username: username.clone(),
@@ -89,46 +95,29 @@ async fn handle_new_connection(stream: TcpStream, server_sender: Arc<Sender<Serv
             while let Some(response) = receiver.recv().await {
                 match response {
                     UsernameResponse { username, new_user } => {
-                        if let Ok(serialized) =
-                            serde_json::to_string(&InitialResponse { username, new_user })
-                        {
-                            let _ = stream.write_all(serialized.as_bytes()).await;
-                            let _ = stream.write_all(b"\n").await;
-                            break;
+                        if let Err(e) = stream.write_packet(&InitialResponse { username, new_user }).await {
+                            eprintln!("Error in writing packet to stream: {}", e);
+                            return;
                         }
+                        break;
                     }
                     _ => {}
                 }
             }
-            break;
         },
         _ => {}
     }
 
-    line = String::new();
-
-    let byte_val = match stream.read_line(&mut line).await {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("Internal server error reading stream: {}", e);
-            return;
-        }
-    };
-
-    let (reader_stream, mut writer_stream) = stream.into_inner().into_split();
-
-    if byte_val == 0 {
-        println!("Client disconnected during handshake.");
-        return;
-    }
-
-    let packet: ClientPacket = match serde_json::from_str(&line) {
+    let packet: ClientPacket = match stream.read_packet().await {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("Internal server error parsing packet: {}", e);
+            eprintln!("Error reading packet: {}", e);
             return;
         }
     };
+
+    let (reader_stream, mut writer_stream) = stream.split();
+
 
     match packet {
         ClientPacket::LoginRequestPacket { username, password } => {
@@ -140,7 +129,7 @@ async fn handle_new_connection(stream: TcpStream, server_sender: Arc<Sender<Serv
                 .send(ServerEvent::ConnectionRequest {
                     login_details: login_info,
                     sender: Arc::clone(&sender_ref),
-                    ip_src: reader_stream.local_addr().unwrap().ip(),
+                    ip_src
                 })
                 .await
             {
@@ -161,9 +150,9 @@ async fn handle_new_connection(stream: TcpStream, server_sender: Arc<Sender<Serv
                     writer_socket(receiver, writer_stream).await;
                 });
             } else if let ConnectionReject { reason } = response {
-                if let Ok(serialized) = serde_json::to_string(&ConnectionRejected { reason }) {
-                    let _ = writer_stream.write_all(serialized.as_bytes()).await;
-                    let _ = writer_stream.write_all(b"\n").await;
+                if let Err(e) = writer_stream.write_packet(&ConnectionRejected { reason }).await {
+                    eprintln!("Error in writing packet to stream: {}", e);
+                    continue;
                 }
             }
             break;
@@ -172,39 +161,20 @@ async fn handle_new_connection(stream: TcpStream, server_sender: Arc<Sender<Serv
 }
 
 async fn reader_socket(
-    stream: OwnedReadHalf,
+    mut stream: EncryptedReader<ReadHalf<TcpStream>>,
     server_sender: Arc<Sender<ServerEvent>>,
     user: Arc<User>,
 ) {
-    let mut stream = BufReader::new(stream);
     loop {
-        let mut line = String::new();
-
-        let byte_val = match stream.read_line(&mut line).await {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("Internal server error reading stream: {}", e);
-                continue;
-            }
-        };
-
-        if byte_val == 0 {
-            if let Err(e) = server_sender
-                .send(ServerEvent::UserDisconnected { user })
-                .await
-            {
-                eprintln!(
-                    "Internal server error sending disconnect packet to server: {}",
-                    e
-                );
-            }
-            break;
-        }
-
-        let packet: ClientPacket = match serde_json::from_str(&line) {
+        let packet: ClientPacket = match stream.read_packet().await {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("Internal server error parsing string to packet: {}", e);
+                if e.is_stream_error() {
+                    if let Err(e) = server_sender.send(UserDisconnected {user}).await {
+                        eprintln!("Internal server error sending disconnect message: {}", e);
+                    }
+                    break;
+                }
                 continue;
             }
         };
@@ -234,12 +204,13 @@ fn packet_to_event(packet: ClientPacket, user: &User) -> ServerEvent {
     }
 }
 
-async fn writer_socket(mut receiver: Receiver<ServerEvent>, mut stream: OwnedWriteHalf) {
+async fn writer_socket(mut receiver: Receiver<ServerEvent>, mut stream: EncryptedWriter<WriteHalf<TcpStream>>) {
     loop {
         if let Some(event) = receiver.recv().await {
-            if let Ok(contents) = serde_json::to_string(&event_to_packet(event)) {
-                let _ = stream.write_all(contents.as_bytes()).await;
-                let _ = stream.write_all(b"\n").await;
+            let packet = event_to_packet(event);
+            if let Err(e) = stream.write_packet(&packet).await {
+                eprintln!("Error writing packet to stream: {}", e);
+                continue;
             }
         }
     }
@@ -389,7 +360,7 @@ async fn server_handler(mut server: Server) {
                     )
                     .await;
                 }
-                ServerEvent::UserDisconnected { user } => {
+                UserDisconnected { user } => {
                     println!("{} has disconnected", user.username);
                     handle_client_disconnect(
                         &user,
@@ -412,6 +383,7 @@ async fn server_handler(mut server: Server) {
                 }
                 UsernameCheck { username, sender } => {
                     let new_user;
+                    println!("Checking user: {}", username);
                     match server.find_user_from_username(username.clone()).await {
                         Some(_) => {
                             new_user = false;

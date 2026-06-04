@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
+use clavis::protocol;
 use tokio::sync::mpsc::{Receiver, Sender};
 use turso::{Builder, Connection, Row};
 
@@ -57,15 +58,17 @@ pub enum ConnectionResult {
     Rejected { reason: String },
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub enum ClientPacket {
-    PublicMessage { contents: String },
-    PrivateMessage { to: String, contents: String },
-    LoginRequestPacket { username: String, password: String },
-    ConnectionRejected { reason: String },
-    InitialRequest { username: String },
-    InitialResponse { username: String, new_user: bool },
-    Disconnect,
+protocol! {
+    #[derive(Debug)]
+    pub enum ClientPacket {
+        PublicMessage { contents: String },
+        PrivateMessage { to: String, contents: String },
+        LoginRequestPacket { username: String, password: String },
+        ConnectionRejected { reason: String },
+        InitialRequest { username: String },
+        InitialResponse { username: String, new_user: bool },
+        Disconnect,
+    }
 }
 
 #[derive(Debug)]
