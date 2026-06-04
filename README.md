@@ -1,4 +1,4 @@
-# ChatServer-RS
+# Rust IRC/Chatserver
 
 A high-performance, asynchronous chat application built with Rust, featuring secure authentication and persistent storage.
 
