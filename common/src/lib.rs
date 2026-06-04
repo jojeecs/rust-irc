@@ -38,7 +38,7 @@ pub struct LoginInfo {
 }
 
 pub struct Server {
-    pub user_id_map: HashMap<usize, (User, Session)>,
+    pub user_id_map: HashMap<usize, (Arc<User>, Arc<Session>)>,
     pub username_map: HashMap<String, usize>,
     pub receiver: Receiver<ServerEvent>,
     pub next_uid: usize,
@@ -62,7 +62,8 @@ pub enum ClientPacket {
     PrivateMessage { to: String, contents: String },
     LoginRequestPacket { username: String, password: String },
     ConnectionRejected { reason: String },
-    SessionRequest,
+    InitialRequest { username: String },
+    InitialResponse { username: String, new_user: bool },
     Disconnect,
 }
 
@@ -74,15 +75,19 @@ pub enum ServerEvent {
         ip_src: IpAddr,
     },
     ConnectionAccept {
-        user: User,
-        session: Session,
+        user: Arc<User>,
+        session: Arc<Session>,
     },
     ConnectionReject {
         reason: String,
     },
-    UserCreation {
+    UsernameCheck {
         username: String,
-        user_id: usize,
+        sender: Arc<Sender<ServerEvent>>
+    },
+    UsernameResponse {
+        username: String,
+        new_user: bool,
     },
     ChatMessageReceive {
         from: usize,
@@ -97,7 +102,7 @@ pub enum ServerEvent {
         contents: String,
     },
     UserDisconnected {
-        user: User,
+        user: Arc<User>,
     },
     Error {
         message: String,
@@ -123,12 +128,42 @@ impl Server {
     }
 
 
-    pub fn find_user_from_uid(&mut self, uid: usize) -> Option<(&User, &Session)> {
+    pub fn find_user_from_uid(&mut self, uid: usize) -> Option<(&User)> {
 
         None
     }
 
-    pub fn find_user_from_username(&self, username: String) -> Option<&User> {
+    pub async fn find_user_from_username(&self, username: String) -> Option<User> {
+        let query = format!("SELECT * FROM users WHERE username = '{}'", username);
+        let user: User;
+        match self.db_conn.query(query, ()).await {
+            Ok(mut rows) => {
+                if let Ok(option_row) = rows.next().await {
+                    match option_row {
+                        Some(row) => {
+                            match row.get_value(0) {
+                                Ok(id_val) => {
+                                    match id_val.as_integer() {
+                                        None => {
+
+                                        }
+                                        Some(value) => {
+                                            let user_id = *value as usize;
+                                            user = User { username, user_id };
+                                            return Some(user);
+                                        }
+                                    }
+                                },
+                                _ => {}
+                            }
+                        },
+                        _ => {
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
 
         None
     }
@@ -136,7 +171,7 @@ impl Server {
     pub fn add_new_session(&mut self, user: User, session: Session) {
         let username = user.username.clone();
         self.username_map.insert(username, user.user_id);
-        self.user_id_map.insert(user.user_id, (user, session));
+        self.user_id_map.insert(user.user_id, (Arc::from(user), Arc::from(session)));
     }
 
     pub async fn load_user(&self, uid: usize) -> Option<User>  {
@@ -160,7 +195,6 @@ impl Server {
                                 return None;
                             }
                         };
-                        println!("{username:?}");
                         return match username.as_text() {
                             Some(u) => {
                                 Some(User::new(u.to_string(), uid))
@@ -184,59 +218,60 @@ impl Server {
     }
 
     async fn user_exists_username(&self, username: &String) -> bool {
-        let query = format!("SELECT * FROM users WHERE username = \'{}\'", username);
-        let mut rows = match self.db_conn.query(query, ()).await {
+        let command = format!("SELECT * FROM users WHERE username = '{}'", username);
+        let mut result = match self.db_conn.query(command, ()).await {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("Error querying DB: {}", e);
-                return true;
+                eprintln!("Error: {}", e);
+                return false;
+            }
+        };
+        while let Some(row) = result.next().await.unwrap() {
+            return true;
+        }
+
+        false
+    }
+
+    pub async fn is_correct_password(&self, login_info: &LoginInfo) -> bool {
+        let query = format!("SELECT * FROM users WHERE username = '{}'", login_info.username);
+        let mut result = match self.db_conn.query(query, ()).await {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return false;
             }
         };
 
 
-        match rows.next().await {
-            Ok(r) => {
-                match r {
-                    Some(row) => {
-                        println!("{:?}", row);
-                        return true;
-                    },
-                    None => {
-                        println!("User doesn't exist");
-                        return false;
-                    }
-                }
-            },
-            Err(e) => {
-            }
+        if let Some(row) = result.next().await.unwrap() {
+            let pass_hash = row.get_value(2).unwrap().as_text().unwrap().clone();
+            return pass_hash.eq(&login_info.password);
         }
         false
     }
 
-    pub async fn add_new_user(&self, username: String, password: String) {
+
+    pub async fn create_new_user(&self, username: String, password: String) -> Option<User> {
         if self.user_exists_username(&username).await {
-            return;
+            return None;
         }
-        self.get_all_users().await;
-        let command = format!("INSERT INTO users (ID, username, password) VALUES ({}, \'{}\', \'{}\')", self.next_uid,  username.trim_ascii(), password.trim_ascii());
-        if let Err(e) = self.db_conn.execute(command, ()).await {
+        let command = "INSERT INTO users (username, password) VALUES (?, ?)".to_string();
+        if let Err(e) = self.db_conn.execute(command,  (username.trim_ascii(), password.trim_ascii())).await {
             eprintln!("Error inserting new user into db: {}", e);
         }
+
+        return self.find_user_from_username(username).await;
     }
 
-    pub async fn get_all_users(&self) {
-        let mut res = self.db_conn.query("SELECT * FROM users", ()).await.unwrap();
-        for row in res.columns() {
-            println!("{:?}", res.next().await.unwrap().unwrap())
-        }
-    }
+
 
     async fn init_db() -> Option<Connection> {
         let conn;
         let db = Builder::new_local("./users.db").build().await.unwrap();
         conn = db.connect().unwrap();
 
-        if let Err(e) = conn.execute("CREATE TABLE IF NOT EXISTS users (ID INT IDENTITY(1, 1), username VARCHAR(50) UNIQUE, password VARCHAR(100))", ())
+        if let Err(e) = conn.execute("CREATE TABLE IF NOT EXISTS users (ID INTEGER PRIMARY KEY AUTOINCREMENT, username VARCHAR(50) UNIQUE, password VARCHAR(100))", ())
             .await {
             eprintln!("Error initializing db: {}", e);
             return None;
