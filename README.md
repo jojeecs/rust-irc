@@ -1,4 +1,4 @@
-# ChatServer-RS
+# Rust IRC/Chatserver
 
 A high-performance, asynchronous chat application built with Rust, featuring secure authentication and persistent storage.
 
@@ -20,14 +20,13 @@ A high-performance, asynchronous chat application built with Rust, featuring sec
 - Rust (latest stable version)
 - SQLite (for local development)
 
-### Running the Server
+### Usage
 
-```bash
-cargo run --bin server
-```
+Option 1: Download the latest stable release from the [releases](https://github.com/jojeecs/chatserver-rs/releases) page, run `server` and then `client` for each connection.
 
-### Running the Client
+Option 2: 
+If you're interested in modifying the code, you can clone the repo:
 
-```bash
-cargo run --bin client
-```
+`git clone github.com/jojeecs/chatserver-rs.git`
+
+Client and Server binary's and source code are stored in their respective folders, and any utility functions are in `common`
