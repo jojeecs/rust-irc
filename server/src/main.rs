@@ -7,10 +7,12 @@ use std::io::{stdin};
 use std::net::IpAddr;
 use std::sync::Arc;
 use clavis::{EncryptedPacket, EncryptedReader, EncryptedStream, EncryptedWriter};
-use tokio::io::{ ReadHalf, WriteHalf};
+use cliclack::input;
+use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{Semaphore, mpsc};
+use regex::Regex;
 
 #[deny(clippy::unwrap_used)]
 #[deny(clippy::expect_used)]
@@ -18,7 +20,23 @@ use tokio::sync::{Semaphore, mpsc};
 #[deny(unused_must_use)]
 #[tokio::main]
 async fn main() {
-    let listener = match TcpListener::bind("127.0.0.1:8080").await {
+    let ip_regex = match Regex::new("[0-9+].[0-9+].[0-9+].[0-9+]") {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Invalid regex: {}", e);
+            return;
+        }
+    };
+    let ip: String = input("Enter IP to listen on")
+        .placeholder("127.0.0.1")
+        .validate(move |input: &String| {
+            if ip_regex.clone().is_match(input) {
+                Ok(())
+            } else {
+                Err("Invalid IP Address")
+            }
+        }).interact().expect("REASON");
+    let listener = match TcpListener::bind(format!("{}:8080", ip)).await {
         Ok(tl) => tl,
         Err(e) => {
             eprintln!("Internal server error binding listener: {}", e);
@@ -51,7 +69,13 @@ async fn main() {
     loop {
         if let Ok((socket, _)) = listener.accept().await {
             let sender = Arc::clone(&sender_reference);
-            let ip_src = socket.local_addr().unwrap().ip();
+            let ip_src = match socket.local_addr() {
+                Ok(s) => s.ip(),
+                Err(e) => {
+                    eprintln!("Error retrieving socket IP address: {}", e);
+                    continue;
+                }
+            };
             let encrypted_socket = match EncryptedStream::new(socket, None).await {
                 Ok(s) => s,
                 Err(e) => {
@@ -303,6 +327,7 @@ async fn server_handler(mut server: Server) {
                             }
                         }
                         None => {
+                            println!("user exists");
                             if !server.verify_credentials(&login_details).await {
                                 if let Err(e) = sender
                                     .send(ConnectionReject {
@@ -383,7 +408,6 @@ async fn server_handler(mut server: Server) {
                 }
                 UsernameCheck { username, sender } => {
                     let new_user;
-                    println!("Checking user: {}", username);
                     match server.find_user_from_username(username.clone()).await {
                         Some(_) => {
                             new_user = false;
@@ -458,18 +482,14 @@ async fn handle_broadcast(
     }
 
     for (user, session) in clients {
-        if originator.user_id == user.user_id {
-            continue;
-        } else {
-            if let Err(e) = session
-                .sender
-                .send(Message {
-                    contents: formatted.clone(),
-                })
-                .await
-            {
-                eprintln!("Internal server error sending broadcast to client: {}", e);
-            }
+        if let Err(e) = session
+            .sender
+            .send(Message {
+                contents: formatted.clone(),
+            })
+            .await
+        {
+            eprintln!("Internal server error sending broadcast to client: {}", e);
         }
     }
 }

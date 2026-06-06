@@ -1,117 +1,146 @@
 use cliclack::{input, password, select};
-use common::ClientPacket::{Disconnect, LoginRequestPacket, PrivateMessage, PublicMessage};
+use common::ClientPacket::{LoginRequestPacket};
 use common::{ClientPacket, LoginInfo};
 use sha3::{Digest, Sha3_256};
-use std::io::stdin;
 use clavis::{EncryptedPacket, EncryptedReader, EncryptedStream, EncryptedWriter};
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
+use tokio::sync::{mpsc};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use crate::ui::App;
+
+mod ui;
+mod event;
 
 #[tokio::main]
 async fn main() {
-    let str = TcpStream::connect("127.0.0.1:8080").await;
-    if let Ok(stream) = str {
-        let encrypted = match EncryptedStream::new(stream, None).await {
-            Ok(s) => s,
+
+    let (socket_tx, socket_rx) = mpsc::unbounded_channel::<ClientPacket>();
+    let (ui_tx, ui_rx) = mpsc::unbounded_channel::<ClientPacket>();
+
+    let _ = color_eyre::install();
+    let terminal = ratatui::init();
+    tokio::spawn(async move {
+        let _ = App::new(ui_rx, socket_tx).run(terminal).await;
+    }).await.unwrap();
+
+
+    ratatui::restore();
+
+    loop {}
+
+
+    // let _  = match TcpStream::connect("127.0.0.1:8080").await {
+    //     Ok(str) => {
+    //         handle(str, ui_tx, socket_rx).await;
+    //     },
+    //     Err(e) => {
+    //         eprintln!("Error: {}", e);
+    //         return;
+    //     }
+    // };
+}
+
+async fn handle(stream: TcpStream, ui_tx: UnboundedSender<ClientPacket>, socket_rx: UnboundedReceiver<ClientPacket>) {
+    let encrypted = match EncryptedStream::new(stream, None).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error encyrpting stream: {}", e);
+            return;
+        }
+    };
+    let (mut read_stream, mut write_stream) = encrypted.split();
+    loop {
+        let mut username = String::new();
+        let has_account = match select("Login or create account: ")
+            .item("new", "Create new account", "")
+            .item("existing", "Login", "")
+            .interact()
+        {
+            Ok(c) => c,
             Err(e) => {
-                eprintln!("Error encyrpting stream: {}", e);
+                eprintln!("Error while selecting login method: {}", e);
                 return;
             }
         };
-        let (mut read_stream, mut write_stream) = encrypted.split();
-        loop {
-            let mut username = String::new();
-            let has_account = match select("Login or create account: ")
-                .item("new", "Create new account", "")
-                .item("existing", "Login", "")
-                .interact()
-            {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("Error while selecting login method: {}", e);
-                    return;
-                }
-            };
 
-            match has_account {
-                "new" => {
-                    username = get_username("What would you like your username to be?");
-                }
-                "existing" => {
-                    username = get_username("Enter username");
-                }
-                _ => {
-                    println!("Invalid input.")
-                }
+        match has_account {
+            "new" => {
+                username = get_username("What would you like your username to be?");
             }
-
-
-            if let Err(e) = write_stream.write_packet(&ClientPacket::InitialRequest {username}).await {
-                eprintln!("Error sending packet: {}", e);
-                return;
+            "existing" => {
+                username = get_username("Enter username");
             }
-
-            let packet: ClientPacket = match read_stream.read_packet().await {
-                Ok(b) => b,
-                Err(e) => {
-                    eprintln!("Error reading server response: {}", e);
-                    return;
-                }
-            };
-
-
-            match packet {
-                ClientPacket::InitialResponse { username, new_user } => {
-                    if new_user && has_account.eq("existing") {
-                        let restart = match select("That user does not exist! Would you like to create an account with that name, or restart?")
-                            .item("create", "Create account", "")
-                            .item("restart", "Restart process", "")
-                            .interact() {
-                            Ok(r) => r,
-                            Err(e) => {
-                                eprintln!("Error taking restart confirmation: {}", e);
-                                continue;
-                            }
-                        };
-                        if restart.eq("restart") {
-                            continue;
-                        }
-                    }
-                    let login_info = match init_user(username, new_user) {
-                        Some(l) => l,
-                        None => {
-                            eprintln!("Error initiating new user information.");
-                            continue;
-                        }
-                    };
-                    if let Err(e) = write_stream.write_packet(&LoginRequestPacket {username: login_info.username, password: login_info.password}).await {
-                        eprintln!("Error sending login info to server: {}", e);
-                    }
-                    break;
-                }
-                _ => {
-                    eprintln!("Received incorrect response from server, please try again later.");
-                    return;
-                }
+            _ => {
+                println!("Invalid input.")
             }
         }
 
-        tokio::spawn(async move {
-            write_socket(write_stream).await;
-        });
 
-        tokio::spawn(async move {
-            read_socket(read_stream).await;
-        })
+        if let Err(e) = write_stream.write_packet(&ClientPacket::InitialRequest { username }).await {
+            eprintln!("Error sending packet: {}", e);
+            return;
+        }
+
+        let packet: ClientPacket = match read_stream.read_packet().await {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("Error reading server response: {}", e);
+                return;
+            }
+        };
+
+
+        match packet {
+            ClientPacket::InitialResponse { username, new_user } => {
+                if new_user && has_account.eq("existing") {
+                    let restart = match select("That user does not exist! Would you like to create an account with that name, or restart?")
+                        .item("create", "Create account", "")
+                        .item("restart", "Restart process", "")
+                        .interact() {
+                        Ok(r) => r,
+                        Err(e) => {
+                            eprintln!("Error taking restart confirmation: {}", e);
+                            continue;
+                        }
+                    };
+                    if restart.eq("restart") {
+                        continue;
+                    }
+                }
+                let login_info = match init_user(username, new_user) {
+                    Some(l) => l,
+                    None => {
+                        eprintln!("Error initiating new user information.");
+                        continue;
+                    }
+                };
+                if let Err(e) = write_stream.write_packet(&LoginRequestPacket { username: login_info.username, password: login_info.password }).await {
+                    eprintln!("Error sending login info to server: {}", e);
+                }
+                break;
+            }
+            _ => {
+                eprintln!("Received incorrect response from server, please try again later.");
+                return;
+            }
+        }
+    }
+
+
+    tokio::spawn(async move {
+        read_socket(read_stream, ui_tx).await;
+    });
+
+    tokio::spawn(async move {
+        write_socket(write_stream, socket_rx).await;
+    })
         .await
         .unwrap();
-    } else {
-        println!("Server is currently down. Please try connecting later.");
-    }
 }
 
 fn init_user(username: String, new: bool) -> Option<LoginInfo> {
-    let prompt ;
+    let prompt;
     if new {
         prompt = "Enter password for new account: ".to_string()
     } else {
@@ -191,7 +220,7 @@ fn verify_username(username: &String) -> bool {
     true
 }
 
-async fn read_socket(mut stream: EncryptedReader<ReadHalf<TcpStream>>) {
+async fn read_socket(mut stream: EncryptedReader<ReadHalf<TcpStream>>, ui_tx: UnboundedSender<ClientPacket>) {
     loop {
         let packet: ClientPacket = match stream.read_packet().await {
             Ok(p) => p,
@@ -201,67 +230,15 @@ async fn read_socket(mut stream: EncryptedReader<ReadHalf<TcpStream>>) {
             }
         };
 
-        match packet {
-            PublicMessage { contents } => {
-                println!(r"{}", contents.trim_ascii());
-            }
-            ClientPacket::ConnectionRejected { reason } => {
-                println!("{reason}");
-                std::process::exit(0);
-            }
-            Disconnect => {
-                println!("Server shutting down.");
-                std::process::exit(0);
-            }
-            _ => {
-                println!("{packet:?}")
-            }
-        }
+        let _ = ui_tx.send(packet);
+
     }
 }
 
-async fn write_socket(mut stream: EncryptedWriter<WriteHalf<TcpStream>>) {
+async fn write_socket(mut stream: EncryptedWriter<WriteHalf<TcpStream>>, mut socket_rx: UnboundedReceiver<ClientPacket>) {
     loop {
-        let mut message = String::new();
-
-        println!("Enter message or type /exit to leave chatroom");
-
-        if let Err(e) = stdin().read_line(&mut message) {
-            eprintln!("Error reading input: {}", e);
-        }
-
-        let packet = raw_msg_to_packet(message.clone());
-
-        if let Err(e) = stream.write_packet(&packet).await {
-            eprintln!("Error sending packet: {}", e);
-        }
-
-        if message.trim_ascii().eq("/exit") {
-            std::process::exit(0);
+        if let Some(msg) = socket_rx.recv().await {
+            let _ = stream.write_packet(&msg).await;
         }
     }
-}
-
-fn raw_msg_to_packet(raw_msg: String) -> ClientPacket {
-    if raw_msg.starts_with("/") {
-        let mut split = raw_msg.split(" ").collect::<Vec<_>>();
-        if let Some(cmd) = split.remove(0).strip_prefix("/") {
-            if cmd.eq("pm") {
-                let user = split.remove(0);
-
-                let message = split.join(" ");
-
-                return PrivateMessage {
-                    to: user.to_string(),
-                    contents: message,
-                };
-            } else if cmd.trim_ascii() == "exit" {
-                return Disconnect;
-            }
-        }
-    } else {
-        return PublicMessage { contents: raw_msg };
-    }
-
-    Disconnect
 }

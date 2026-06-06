@@ -5,10 +5,12 @@ edition = "2024"
 
 [dependencies]
 common = { path = "../common" }
-serde_json = "1.0.150"
 tokio = "1.52.3"
 sha3 = "0.12.0"
-rpassword = "7.5.4"
 cliclack = "0.5.4"
-log = "0.4.30"
 clavis = { git = "https://github.com/pyrohost/clavis" }
+ratatui = "0.30.1"
+crossterm = { version = "0.28.1", features = ["event-stream"] }
+tui-input = { version = "*", features = ["crossterm"], default-features = false }
+color-eyre = "0.6.3"
+futures = "0.3.32"

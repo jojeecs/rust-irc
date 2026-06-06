@@ -52,12 +52,6 @@ pub struct ServerDB {
     pub login_info_vec: Vec<LoginInfo>,
 }
 
-pub enum ConnectionResult {
-    AcceptedCurrentUser { uid: usize },
-    AcceptedNewUser { username: String, password: String },
-    Rejected { reason: String },
-}
-
 protocol! {
     #[derive(Debug)]
     pub enum ClientPacket {
@@ -67,6 +61,7 @@ protocol! {
         ConnectionRejected { reason: String },
         InitialRequest { username: String },
         InitialResponse { username: String, new_user: bool },
+        AvailableRooms { rooms: Vec<String> },
         Disconnect,
     }
 }
@@ -165,14 +160,7 @@ impl Server {
         None
     }
 
-    pub fn add_new_session(&mut self, user: User, session: Session) {
-        let username = user.username.clone();
-        self.username_map.insert(username, user.user_id);
-        self.user_id_map
-            .insert(user.user_id, (Arc::from(user), Arc::from(session)));
-    }
-
-    pub async fn load_user(&self, uid: usize) -> Option<User> {
+    pub async fn get_user_from_uid(&self, uid: usize) -> Option<User> {
         let query = format!("SELECT * FROM user WHERE uid = {}", uid);
         let mut result = match self.db_conn.query(query, ()).await {
             Ok(r) => r,
@@ -209,10 +197,10 @@ impl Server {
     }
 
     async fn user_exists_username(&self, username: &String) -> bool {
-        let command = format!("SELECT * FROM users WHERE username = '{}'", username);
+        let command = format!("SELECT DISTINCT * FROM users WHERE LOWER(username) LIKE LOWER('%{}%')", username);
         let result = self.run_query(command).await.unwrap_or_else(|| Vec::new());
 
-        while let Some(_) = result.iter().next() {
+        if let Some(_) = result.iter().next() {
             return true;
         }
         false
@@ -227,6 +215,7 @@ impl Server {
                 return None;
             }
         };
+
 
         loop {
             if let Ok(row) = result.next().await {
@@ -246,7 +235,7 @@ impl Server {
 
     pub async fn verify_credentials(&self, login_info: &LoginInfo) -> bool {
         let query = format!(
-            "SELECT * FROM users WHERE username = '{}'",
+            "SELECT DISTINCT * FROM users WHERE LOWER(username) LIKE LOWER('%{}%')",
             login_info.username
         );
         let result = self.run_query(query).await.unwrap_or_else(|| Vec::new());
@@ -286,8 +275,20 @@ impl Server {
 
     async fn init_db() -> Option<Connection> {
         let conn;
-        let db = Builder::new_local("./users.db").build().await.unwrap();
-        conn = db.connect().unwrap();
+        let db = match Builder::new_local("./users.db").build().await {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("Error building database: {}", e);
+                return None;
+            }
+        };
+        conn = match db.connect() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Error establishing connection to database: {}", e);
+                return None;
+            }
+        };
 
         if let Err(e) = conn.execute("CREATE TABLE IF NOT EXISTS users (ID INTEGER PRIMARY KEY AUTOINCREMENT, username VARCHAR(50) UNIQUE, password VARCHAR(100))", ())
             .await {

@@ -1,7 +1,11 @@
 [package]
 name = "chatserver"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 
 [workspace]
 members = ["server", "client", "common"]
+
+[dependencies]
+ratatui = "0.30.1"
+crossterm = "0.25"
