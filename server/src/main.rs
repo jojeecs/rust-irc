@@ -1,6 +1,6 @@
-use common::ClientPacket::{ConnectionRejected, Disconnect, InitialResponse};
-use common::ServerEvent::{ChatMessageReceive, ConnectionAccept, ConnectionReject, Error, Message, PrivateMessage, Shutdown, UserDisconnected, UsernameCheck, UsernameResponse};
-use common::{ClientPacket, LoginInfo, Server, ServerEvent, Session, User};
+use common::ClientPacket::{Disconnect, Handshake};
+use common::ServerEvent::{ChatMessageReceive, ConnectionAccept, ConnectionReject, LoginRequest, Error, Message, PrivateMessage, Shutdown, UserDisconnected, UsernameCheck, UsernameResponse};
+use common::{ClientPacket, HandshakePacket, Server, ServerEvent, Session, User};
 use rand::{Rng, rng};
 use std::collections::HashMap;
 use std::io::{stdin};
@@ -13,6 +13,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{Semaphore, mpsc};
 use regex::Regex;
+use common::HandshakePacket::ServerLoginCheck;
 
 #[deny(clippy::unwrap_used)]
 #[deny(clippy::expect_used)]
@@ -27,15 +28,22 @@ async fn main() {
             return;
         }
     };
-    let ip: String = input("Enter IP to listen on")
+    let ip: String = match input("Enter IP to listen on")
         .placeholder("127.0.0.1")
+        .default_input("127.0.0.1")
         .validate(move |input: &String| {
             if ip_regex.clone().is_match(input) {
                 Ok(())
             } else {
                 Err("Invalid IP Address")
             }
-        }).interact().expect("REASON");
+        }).interact()
+    {
+        Ok(s) => s,
+        Err(_) => {
+            return;
+        }
+    };
     let listener = match TcpListener::bind(format!("{}:8080", ip)).await {
         Ok(tl) => tl,
         Err(e) => {
@@ -43,6 +51,8 @@ async fn main() {
             return;
         }
     };
+
+    println!("Listening on {}:8080", ip);
 
     let (server_sender, server_recv) = mpsc::channel::<ServerEvent>(Semaphore::MAX_PERMITS);
 
@@ -90,98 +100,67 @@ async fn main() {
     }
 }
 
-async fn handle_new_connection(mut stream: EncryptedStream<TcpStream>, server_sender: Arc<Sender<ServerEvent>>, ip_src: IpAddr) {
+async fn handle_new_connection(stream: EncryptedStream<TcpStream>, server_sender: Arc<Sender<ServerEvent>>, ip_src: IpAddr) {
     let (sender, mut receiver) = mpsc::channel::<ServerEvent>(100);
     let sender_ref = Arc::new(sender);
+    let (mut reader_stream, mut writer_stream) = stream.split();
 
-    let packet: ClientPacket = match stream.read_packet().await {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!(
-                "Internal server error reading stream during handshake: {}",
-                e
-            );
-            return;
-        }
-    };
+    println!("Connection received from: {}", ip_src);
 
-    match packet {
-        ClientPacket::InitialRequest { username } => {
-            if let Err(e) = server_sender
-                .send(UsernameCheck {
-                    username: username.clone(),
-                    sender: Arc::clone(&sender_ref),
-                })
-                .await
-            {
-                eprintln!("Internal server error: {}", e);
+    let user_found: Arc<User>;
+
+    loop {
+        let packet: ClientPacket = match reader_stream.read_packet().await {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Client disconnected during handshake: {}", e);
+                return;
             }
-            while let Some(response) = receiver.recv().await {
-                match response {
-                    UsernameResponse { username, new_user } => {
-                        if let Err(e) = stream.write_packet(&InitialResponse { username, new_user }).await {
-                            eprintln!("Error in writing packet to stream: {}", e);
-                            return;
+        };
+        match packet {
+            Handshake { handshake_packet } => {
+                match handshake_packet {
+                    HandshakePacket::ClientUsername { username } => {
+                        println!("Received username check for {}", username);
+                        if let Err(e) = server_sender.send(UsernameCheck { username, sender: Arc::clone(&sender_ref) }).await {
+                            eprintln!("Internal server error sending username check: {}", e);
                         }
-                        break;
+
+                        if let Some(UsernameResponse { name_taken: new_user, .. }) = receiver.recv().await {
+                            let _ = writer_stream.write_packet(&Handshake { handshake_packet: HandshakePacket::ServerUsernameCheck { name_taken: !new_user } }).await;
+                            println!("Sent username check to client, new user: {}", new_user);
+                        }
+                    },
+                    HandshakePacket::ClientLogin { login_info } => {
+                        println!("Received login request with information\nUsername: {}\nPassword Hash: {}", login_info.username, login_info.password);
+                        if let Err(e) = server_sender.send(LoginRequest { login_details: login_info, sender: Arc::clone(&sender_ref), ip_src }).await {
+                            eprintln!("Internal server error sending login request: {}", e);
+                        }
+
+                        if let Some(ConnectionAccept { user, .. }) = receiver.recv().await {
+                            println!("Connection accepted, user information: {:?}", user);
+                            let _ = writer_stream.write_packet(&Handshake { handshake_packet: ServerLoginCheck { correct_password: true } }).await;
+                            user_found = user;
+                            break;
+                        } else {
+                            let _ = writer_stream.write_packet(&Handshake { handshake_packet: ServerLoginCheck { correct_password: false } }).await;
+                            println!("Connection rejected");
+                        }
                     }
                     _ => {}
                 }
-            }
-        },
-        _ => {}
-    }
-
-    let packet: ClientPacket = match stream.read_packet().await {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Error reading packet: {}", e);
-            return;
-        }
-    };
-
-    let (reader_stream, mut writer_stream) = stream.split();
-
-
-    match packet {
-        ClientPacket::LoginRequestPacket { username, password } => {
-            let login_info = LoginInfo {
-                username: username.trim_ascii().to_string(),
-                password,
-            };
-            if let Err(e) = server_sender
-                .send(ServerEvent::ConnectionRequest {
-                    login_details: login_info,
-                    sender: Arc::clone(&sender_ref),
-                    ip_src
-                })
-                .await
-            {
-                eprintln!("Internal server error sending info to server: {}", e);
-            }
-        }
-        _ => {}
-    }
-
-    loop {
-        if let Some(response) = receiver.recv().await {
-            if let ConnectionAccept { user, .. } = response {
-                tokio::spawn(async move {
-                    reader_socket(reader_stream, Arc::clone(&server_sender), user).await;
-                });
-
-                tokio::spawn(async move {
-                    writer_socket(receiver, writer_stream).await;
-                });
-            } else if let ConnectionReject { reason } = response {
-                if let Err(e) = writer_stream.write_packet(&ConnectionRejected { reason }).await {
-                    eprintln!("Error in writing packet to stream: {}", e);
-                    continue;
-                }
-            }
-            break;
+            },
+            _ => {}
         }
     }
+
+    tokio::spawn(async move {
+        reader_socket(reader_stream, server_sender, user_found).await
+    });
+
+    tokio::spawn(async move {
+        writer_socket(receiver, writer_stream).await
+    }).await.unwrap();
 }
 
 async fn reader_socket(
@@ -239,7 +218,6 @@ async fn writer_socket(mut receiver: Receiver<ServerEvent>, mut stream: Encrypte
         }
     }
 }
-
 fn event_to_packet(server_event: ServerEvent) -> ClientPacket {
     match server_event {
         Message { contents } => ClientPacket::PublicMessage { contents },
@@ -286,7 +264,7 @@ async fn server_handler(mut server: Server) {
     loop {
         if let Some(event) = server.receiver.recv().await {
             match event {
-                ServerEvent::ConnectionRequest {
+                LoginRequest {
                     login_details,
                     sender,
                     ip_src,
@@ -327,7 +305,6 @@ async fn server_handler(mut server: Server) {
                             }
                         }
                         None => {
-                            println!("user exists");
                             if !server.verify_credentials(&login_details).await {
                                 if let Err(e) = sender
                                     .send(ConnectionReject {
@@ -416,7 +393,7 @@ async fn server_handler(mut server: Server) {
                             new_user = true;
                         }
                     }
-                    if let Err(e) = sender.send(UsernameResponse { username, new_user }).await {
+                    if let Err(e) = sender.send(UsernameResponse { username, name_taken: new_user }).await {
                         eprintln!("Internal server error sending username response: {}", e);
                     }
                 }
@@ -435,18 +412,23 @@ async fn handle_pm(
     message: String,
     current_users: &HashMap<usize, (Arc<User>, Arc<Session>)>,
 ) {
-    let formatted = format!("From {}: {}", from.username, message);
-    if let Some((_, session)) = current_users.get(&to.user_id) {
-        if let Err(e) = session
-            .sender
-            .send(Message {
-                contents: formatted,
-            })
-            .await
-        {
-            eprintln!("Internal server error sending message: {}", e);
+    let from_formatted = format!("From {}: {}", from.username, message);
+    let to_formatted = format!("To {}: {}", to.username, message);
+    let from_session = match current_users.get(&from.user_id) {
+        Some((_, s)) => s,
+        None => {
+            return;
         }
-    }
+    };
+    let to_session = match current_users.get(&to.user_id) {
+        Some((_, s)) => s,
+        None => {
+            let _ = from_session.sender.send(Error {message: format!("User {} not found or not online.", to.username)}).await;
+            return;
+        }
+    };
+    let _ = to_session.sender.send(Message {contents: from_formatted}).await;
+    let _ = from_session.sender.send(Message {contents: to_formatted}).await;
 }
 async fn handle_client_disconnect(
     user: &User,

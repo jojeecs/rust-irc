@@ -10,3 +10,4 @@ tokio = { version = "1", features = ["full"] }
 clavis = { git = "https://github.com/pyrohost/clavis" }
 cliclack = "0.5.4"
 regex = "1.12.3"
+log = "0.4.30"

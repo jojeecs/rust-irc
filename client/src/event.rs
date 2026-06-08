@@ -1,26 +1,26 @@
-use futures::{FutureExt, StreamExt};
-use std::time::Duration;
 use color_eyre::eyre::OptionExt;
-use ratatui::crossterm::event::Event as CrosstermEvent;
-use tokio::sync::mpsc;
 use common::ClientPacket;
+use futures::{FutureExt, StreamExt};
+use ratatui::crossterm::event::Event as CrosstermEvent;
+use std::time::Duration;
+use tokio::sync::mpsc;
 
 pub enum Event {
     Tick,
     Crossterm(crossterm::event::Event),
-    Ui(UIEvent)
+    Ui(UIEvent),
 }
 
 pub enum UIEvent {
     Quit,
     MessageReceived(ClientPacket),
     PostMessage(String),
-    Login(LoginEvent)
+    Login(LoginEvent),
 }
 
 pub enum LoginEvent {
     Username(String),
-    Password(String)
+    Password(String),
 }
 
 #[derive(Debug)]
@@ -33,16 +33,19 @@ impl EventHandler {
     pub fn new() -> Self {
         let (sender, receiver) = mpsc::unbounded_channel::<Event>();
         let actor = EventTask::new(sender.clone());
-        tokio::spawn(async {actor.run().await});
+        tokio::spawn(async { actor.run().await });
         Self { sender, receiver }
     }
 
     pub async fn next(&mut self) -> color_eyre::Result<Event> {
-        self.receiver.recv().await.ok_or_eyre("Failed to receive task")
+        self.receiver
+            .recv()
+            .await
+            .ok_or_eyre("Failed to receive task")
     }
 
-    pub fn send(&mut self, app_event: UIEvent) {
-        let _ = self.sender.send(Event::Ui(app_event));
+    pub fn send(&mut self, app_event: Event) {
+        let _ = self.sender.send(app_event);
     }
 }
 

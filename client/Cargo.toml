@@ -10,7 +10,7 @@ sha3 = "0.12.0"
 cliclack = "0.5.4"
 clavis = { git = "https://github.com/pyrohost/clavis" }
 ratatui = "0.30.1"
-crossterm = { version = "0.28.1", features = ["event-stream"] }
+crossterm = { version = "0.29.0", features = ["event-stream"] }
 tui-input = { version = "*", features = ["crossterm"], default-features = false }
 color-eyre = "0.6.3"
 futures = "0.3.32"

@@ -51,6 +51,16 @@ pub struct Server {
 pub struct ServerDB {
     pub login_info_vec: Vec<LoginInfo>,
 }
+protocol! {
+    #[derive(Debug)]
+    pub enum HandshakePacket {
+        Hello,
+        ClientUsername { username: String },
+        ServerUsernameCheck { name_taken: bool },
+        ClientLogin { login_info: LoginInfo },
+        ServerLoginCheck { correct_password: bool },
+    }
+}
 
 protocol! {
     #[derive(Debug)]
@@ -59,16 +69,19 @@ protocol! {
         PrivateMessage { to: String, contents: String },
         LoginRequestPacket { username: String, password: String },
         ConnectionRejected { reason: String },
+        ConnectionAccepted,
         InitialRequest { username: String },
         InitialResponse { username: String, new_user: bool },
         AvailableRooms { rooms: Vec<String> },
+        Error { reason: String },
+        Handshake{ handshake_packet: HandshakePacket },
         Disconnect,
     }
 }
 
 #[derive(Debug)]
 pub enum ServerEvent {
-    ConnectionRequest {
+    LoginRequest {
         login_details: LoginInfo,
         sender: Arc<Sender<ServerEvent>>,
         ip_src: IpAddr,
@@ -86,7 +99,7 @@ pub enum ServerEvent {
     },
     UsernameResponse {
         username: String,
-        new_user: bool,
+        name_taken: bool,
     },
     ChatMessageReceive {
         from: usize,
@@ -196,7 +209,7 @@ impl Server {
         None
     }
 
-    async fn user_exists_username(&self, username: &String) -> bool {
+    async fn name_taken(&self, username: &String) -> bool {
         let command = format!("SELECT DISTINCT * FROM users WHERE LOWER(username) LIKE LOWER('%{}%')", username);
         let result = self.run_query(command).await.unwrap_or_else(|| Vec::new());
 
@@ -258,7 +271,7 @@ impl Server {
     }
 
     pub async fn create_new_user(&self, username: String, password: String) -> Option<User> {
-        if self.user_exists_username(&username).await {
+        if self.name_taken(&username).await {
             return None;
         }
         let command = "INSERT INTO users (username, password) VALUES (?, ?)".to_string();

@@ -1,280 +1,463 @@
+use crate::event::Event::Crossterm;
+use crate::event::UIEvent::{Login, MessageReceived, PostMessage, Quit};
+use crate::event::{Event, EventHandler, LoginEvent};
+use crate::ui::Screen::{HomePage, LoginPage};
+use common::ClientPacket::{
+    Disconnect, Handshake, PrivateMessage, PublicMessage,
+};
+use common::HandshakePacket::{ClientLogin, ClientUsername};
+use common::{ClientPacket, LoginInfo};
 use crossterm::event;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crossterm::event::Event::Key;
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::buffer::Buffer;
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, ToLine};
+use ratatui::widgets::{Block, Paragraph, Widget};
 use ratatui::{DefaultTerminal, Frame};
-use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
-use ratatui::style::{Color, Style, Stylize};
-use ratatui::widgets::{Block, BorderType, List, Paragraph, Widget};
-use tui_input::backend::crossterm::EventHandler as EvtHandler;
+use ratatui::style::Color::{Red, White};
+use sha3::{Digest, Sha3_256};
+use tokio::sync::mpsc::{Receiver, Sender};
 use tui_input::Input;
-use common::ClientPacket;
-use common::ClientPacket::{Disconnect, LoginRequestPacket, PrivateMessage, PublicMessage};
-use crate::event::{Event, EventHandler, LoginEvent, UIEvent};
-use crate::event::UIEvent::{PostMessage, MessageReceived, Login};
-use crate::ui::AppStage::{Chatting, LoginStage};
-use crate::ui::LoginSteps::{GotUsername, Init, Quit};
+use tui_input::backend::crossterm::EventHandler as EvtHandler;
 
 #[derive(Debug)]
 pub struct App {
-    pub input: Input,
     pub running: bool,
-    pub stage: AppStage,
+    pub screen: Screen,
     pub events: EventHandler,
     pub messages: Vec<String>,
-    pub ui_rx: UnboundedReceiver<ClientPacket>,
-    pub socket_tx: UnboundedSender<ClientPacket>,
+    pub ui_rx: Receiver<ClientPacket>,
+    pub socket_tx: Sender<ClientPacket>,
+    pub login: LoginInfo,
 }
+
+struct Button<'a> {
+    label: Line<'a>,
+    theme: Theme
+}
+
+struct Theme {
+    text: Color,
+    highlight: Color,
+    background: Color,
+    shadow: Color
+
+}
+
 #[derive(Debug)]
-pub enum AppStage {
-    LoginStage(LoginSteps),
-    Chatting,
+pub enum Screen {
+    LoginPage(LoginScreen),
+    HomePage(HomeScreen),
 }
+
 #[derive(Debug)]
-pub enum LoginSteps {
-    Init,
-    GotUsername,
-    GotPassword,
-    Quit,
+pub struct HomeScreen {
+    pub messages: Vec<String>,
+    pub input: Input,
 }
+
+#[derive(Debug)]
+pub struct LoginScreen {
+    username_input: Input,
+    password_input: Input,
+    confirm_password_input: Input,
+    editing_username: bool,
+    username_sent: bool,
+    new_user: bool,
+    password_accepted: bool,
+}
+
+impl LoginScreen {
+    fn new() -> Self {
+        LoginScreen {
+            username_input: Input::default(),
+            password_input: Input::default(),
+            confirm_password_input: Input::default(),
+            editing_username: true,
+            username_sent: false,
+            new_user: false,
+            password_accepted: true,
+        }
+    }
+}
+
 impl App {
-    pub fn new(ui_rx: UnboundedReceiver<ClientPacket>, socket_tx: UnboundedSender<ClientPacket>) -> Self {
+    pub fn new(ui_rx: Receiver<ClientPacket>, socket_tx: Sender<ClientPacket>) -> Self {
         Self {
-            input: Input::default(),
-            running: false,
-            stage: LoginStage(Init),
+            running: true,
+            screen:LoginPage(LoginScreen::new()),
             events: EventHandler::new(),
             messages: Vec::new(),
             ui_rx,
             socket_tx,
+            login: LoginInfo {
+                username: String::new(),
+                password: String::new(),
+            },
         }
     }
 
     pub async fn run(mut self, mut terminal: DefaultTerminal) -> color_eyre::Result<()> {
-        self.login(&mut terminal).await?;
+        let mut prompt;
+
         while self.running {
-            terminal.draw(|frame|  {
-                frame.render_widget(&self, frame.area());
-                let width = frame.area().width.max(3) - 3;
-                let scroll = self.input.visual_scroll(width as usize);
-                let x = self.input.visual_cursor().max(scroll) - scroll + 1;
-                frame.set_cursor_position((frame.area().x + x as u16, frame.area().y + 2))
-            })?;
+            match &self.screen {
+                LoginPage(login) => {
+                    if login.new_user {
+                        prompt = "Create New User";
+                    } else {
+                        prompt = "Login";
+                    }
+                },
+                HomePage(_) => {
+                    prompt = "Home";
+                },
+            }
+            terminal.draw(|frame| self.render(frame, prompt))?;
 
             match self.events.next().await? {
-                Event::Tick => self.tick().await,
-                Event::Crossterm(event) => match event {
-                    Key(key_event) => {
-                        if key_event.kind == event::KeyEventKind::Press {
-                            self.handle_key_events(key_event)?;
-                        }
+                Crossterm(event) => match event {
+                    Key(key_event) if key_event.kind == event::KeyEventKind::Press => {
+                        self.screen.handle_input(key_event, &mut self.events)?;
                     }
                     _ => {}
                 },
-                Event::Ui(event) => match event {
-                    UIEvent::Quit => {
-                        self.quit()
+                Event::Ui(Quit) => {
+                    self.running = false;
+                    let _ = self.socket_tx.send(Disconnect).await;
+                }
+                Event::Ui(Login(event)) => match event {
+                    LoginEvent::Username(username) => {
+                        self.login.username = username.clone();
+                        if let Err(e) = self
+                            .socket_tx
+                            .send(Handshake {
+                                handshake_packet: ClientUsername { username },
+                            })
+                            .await
+                        {
+                            eprintln!("Error occurred sending packet: {}", e);
+                        }
                     }
-                    MessageReceived(msg) => {
-                        self.messages.push(self.packet_to_string(msg));
+                    LoginEvent::Password(password) => {
+                        self.login.password = password.clone();
+                        let login_info = LoginInfo {
+                            username: self.login.username.clone(),
+                            password,
+                        };
+                        if let Err(e) = self
+                            .socket_tx
+                            .send(Handshake {
+                                handshake_packet: ClientLogin { login_info },
+                            })
+                            .await
+                        {
+                            eprintln!("Error: {}", e);
+                        };
+                    }
+                },
+                Event::Ui(PostMessage(contents)) => {
+                    self.socket_tx.send(raw_msg_to_packet(contents)).await?;
+                }
+                Event::Ui(MessageReceived(packet)) => match packet {
+                    PublicMessage { contents } => {
+                        if let HomePage(home) = &mut self.screen {
+                            home.messages.push(contents);
+                        }
                     },
-                    PostMessage(msg) => {
-                        let _ = self.socket_tx.send(raw_msg_to_packet(msg));
+                    ClientPacket::ConnectionAccepted => {
+                        self.screen = HomePage(HomeScreen {
+                            messages: self.messages.clone(),
+                            input: Default::default(),
+                        });
                     },
-                    UIEvent::Login(_) => todo!()
+                    ClientPacket::ConnectionRejected {..} => {
+                        if let LoginPage(login) = &mut self.screen {
+                            login.password_accepted = false;
+                        }
+                    },
+                    _ => {}
+                },
+                _ => {}
+            }
+            self.tick().await;
+        }
+        Ok(())
+    }
+
+    fn render(&self, frame: &mut Frame, prompt: &str) {
+        let [title, rest] =
+            Layout::vertical([Constraint::Percentage(5), Constraint::Percentage(95)])
+                .areas(frame.area());
+
+        let notifications = Line::raw(prompt).style(Style::default());
+
+        frame.render_widget(notifications, title);
+        frame.render_widget(&self.screen, rest);
+
+        if let Some(input) = self.screen.get_input() {
+            let width = frame.area().width.max(3) - 3;
+            let scroll = input.visual_scroll(width as usize);
+            let x = input.visual_cursor().max(scroll) - scroll + 1;
+
+            match &self.screen {
+                LoginPage(login) => {
+                    let y = if login.editing_username { 1 } else { 4 };
+                    frame.set_cursor_position((frame.area().x + x as u16, rest.y + y));
+                }
+                HomePage(_) => {
+                    frame.set_cursor_position((
+                        frame.area().x + x as u16,
+                        frame.area().y + frame.area().height - 2,
+                    ));
                 }
             }
         }
-
-        Ok(())
-    }
-
-    async fn login(&mut self, terminal: &mut DefaultTerminal) -> color_eyre::Result<()> {
-        let mut username: String = String::new();
-        let mut password: String;
-        loop {
-            match &self.stage {
-                LoginStage(_) => {
-                    terminal.draw(|frame| self.render_login(frame))?;
-
-                    match self.events.next().await? {
-                        Event::Tick => {}
-                        Event::Crossterm(event) => match event {
-                            Key(key_event) => {
-                                if key_event.kind == event::KeyEventKind::Press {
-                                    self.handle_key_events(key_event)?;
-                                }
-                            },
-                            _ => {}
-                        }
-                        Event::Ui(event) => match event {
-                            UIEvent::Quit => {
-                                self.stage = LoginStage(Quit);
-                            }
-                            MessageReceived(msg) => {
-                                self.messages.push(self.packet_to_string(msg));
-                            },
-                            PostMessage(msg) => {
-                                let _ = self.socket_tx.send(raw_msg_to_packet(msg));
-                            },
-                            Login(login_event) => {
-                                match login_event {
-                                    LoginEvent::Username(user) => {
-                                        username = user;
-                                        self.stage = LoginStage(GotUsername);
-                                    }
-                                    LoginEvent::Password(pass) => {
-                                        password = pass;
-                                        let _ = self.socket_tx.send(LoginRequestPacket {username: username.clone(), password});
-                                        self.stage = Chatting;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                _ => {
-                    break;
-                }
-            }
-            }
-        Ok(())
-    }
-
-    fn render_login(&mut self, frame: &mut Frame) {
-        let [login_area] = Layout::vertical([Constraint::Max(3)]).areas(frame.area());
-        let prompt: &str = match &self.stage {
-            LoginStage(step) => {
-                match step {
-                    Init => {"Username"}
-                    GotUsername => {"Password"}
-                    _ => {
-                        ""
-                    }
-                }
-            },
-            _ => {
-                ""
-            }
-        };
-        self.render_login_input(frame, login_area, prompt);
-    }
-
-    fn render_login_input(&self, frame: &mut Frame, area: Rect, prompt: &str) {
-        let width = frame.area().width.max(3) - 3;
-        let scroll = self.input.visual_scroll(width as usize);
-        let style = Style::default();
-        let input = Paragraph::new(self.input.value())
-            .style(style)
-            .scroll((0, scroll as u16))
-            .block(Block::bordered().title(prompt));
-
-        frame.render_widget(input, area);
-
-        let x = self.input.visual_cursor().max(scroll) - scroll + 1;
-        frame.set_cursor_position((area.x + x as u16, area.y + 1))
-    }
-
-
-    fn packet_to_string(&self, packet: ClientPacket) -> String {
-
-        String::new()
-    }
-
-    fn render_messages(&self, area: Rect, buffer: &mut Buffer) {
-        let messages = self
-            .messages
-            .iter()
-            .enumerate()
-            .map(|(i, message)| format!("{}: {}", i, message));
-        let messages = List::new(messages).block(Block::bordered().title("Messages"));
-        messages.render(area, buffer);
-    }
-
-    fn render_input(&self, area: Rect, buffer: &mut Buffer) {
-        let width = area.width.max(3) - 3;
-        let scroll = self.input.visual_scroll(width as usize);
-        let style = Style::default();
-        let input = Paragraph::new(self.input.value())
-            .style(style)
-            .scroll((0, scroll as u16))
-            .block(Block::bordered().title("Input"));
-        input.render(area, buffer);
-    }
-    fn quit(&mut self) {
-        self.running = false;
-    }
-    fn handle_key_events(&mut self, key_event: KeyEvent) -> color_eyre::Result<()> {
-        match key_event.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.events.send(UIEvent::Quit),
-            KeyCode::Char('c' | 'C') if key_event.modifiers == KeyModifiers::CONTROL => {
-                self.events.send(UIEvent::Quit)
-            }
-            KeyCode::Char(char) => {
-                let event = ratatui::crossterm::event::Event::Key(ratatui::crossterm::event::KeyEvent::new(ratatui::crossterm::event::KeyCode::Char(char), ratatui::crossterm::event::KeyModifiers::empty()));
-                self.input.handle_event(&event);
-            }
-            KeyCode::Enter => {
-                match &self.stage {
-                    LoginStage(step) => {
-                        match step {
-                            Init => {
-                                self.events.send(Login(LoginEvent::Username(self.input.value_and_reset())));
-                            },
-                            GotUsername => {
-                                self.events.send(Login(LoginEvent::Password(self.input.value_and_reset())));
-                            }
-                            _ => {}
-                        }
-                    }
-                    _ => {
-                        self.events.send(PostMessage(self.input.value_and_reset()))
-                    }
-                }
-            },
-            _ => {}
-        }
-
-        Ok(())
     }
 
     async fn tick(&mut self) {
-        if let Some(msg) = self.ui_rx.recv().await {
-            self.events.send(MessageReceived(msg));
+        match self.ui_rx.try_recv() {
+            Ok(msg) => {
+                self.events.send(Event::Ui(MessageReceived(msg)));
+            },
+            Err(_) => {
+                return;
+            }
+        }
+
+    }
+}
+
+impl Widget for &HomeScreen {
+    fn render(self, area: Rect, buf: &mut Buffer)
+    where
+        Self: Sized,
+    {
+        let layout = Layout::vertical([Constraint::Min(0), Constraint::Length(3)]);
+        let [messages_area, input_area] = area.layout(&layout);
+
+        // Simple message display using a list of paragraphs or a single paragraph with newlines
+        let all_messages = self.messages.join("\n");
+        let messages = Paragraph::new(all_messages)
+            .style(Style::default())
+            .block(Block::bordered().title("Messages"));
+
+        let input = Paragraph::new(self.input.value())
+            .style(Style::default())
+            .block(Block::bordered().title("Input"));
+
+        messages.render(messages_area, buf);
+        input.render(input_area, buf);
+    }
+}
+
+impl Widget for &LoginScreen {
+    fn render(self, area: Rect, buf: &mut Buffer)
+    where
+        Self: Sized,
+    {
+        let login_layout = Layout::vertical([Constraint::Max(3), Constraint::Max(3), Constraint::Max(3), Constraint::Max(5)]);
+        let [username_area, password_area, confirm_password, switch_login_new_user] = area.layout(&login_layout);
+
+        let mut login_button_bg = Color::Rgb(28, 41, 82);
+        let mut new_user_button_bg = Color::Rgb(28, 41, 82);
+        if self.new_user {
+            new_user_button_bg =  Color::Rgb(48, 72, 144);
+        } else {
+            login_button_bg =  Color::Rgb(48, 72, 144);
+        }
+
+        let login_button = Button { label: "Login".to_line(), theme: Theme {
+            text: Color::Rgb(255, 255, 255),
+            background: login_button_bg,
+            highlight: Color::Rgb(64, 96, 192),
+            shadow: Color::Rgb(32, 48, 96),
+        } };
+
+        let new_user_button = Button { label: "New User".to_line(), theme: Theme {
+            text: Color::Rgb(255, 255, 255),
+            background: new_user_button_bg,
+            highlight: Color::Rgb(64, 96, 192),
+            shadow: Color::Rgb(32, 48, 96),
+        } };
+
+
+        let button_layout = Layout::vertical([Constraint::Percentage(45), Constraint::Percentage(10), Constraint::Percentage(45)]);
+
+        let [login, _, new_user] = switch_login_new_user.layout(&button_layout);
+
+        login_button.render(login, buf);
+        new_user_button.render(new_user, buf);
+
+        let username_input = Paragraph::new(self.username_input.value())
+            .style(Style::default())
+            .block(Block::bordered().title("Username"));
+
+        username_input.render(username_area, buf);
+
+        let pass_style = match self.password_accepted {
+            true => {
+                Style::new().fg(White)
+            },
+            false => {
+                Style::new().fg(Red)
+            }
+        };
+
+        let password_input = Paragraph::new(self.password_input.value())
+            .style(pass_style)
+            .block(Block::bordered().title("Password"));
+        password_input.render(password_area, buf);
+        if self.new_user {
+            let confirm_password_input =  Paragraph::new(self.password_input.value())
+                .style(pass_style)
+                .block(Block::bordered().title("Confirm password"));
+            confirm_password_input.render(confirm_password, buf);
         }
     }
 }
 
+impl Screen {
+    fn handle_input(
+        &mut self,
+        key_event: KeyEvent,
+        event_handler: &mut EventHandler,
+    ) -> color_eyre::Result<()> {
+        match self {
+            LoginPage(login) => match key_event.code {
+                KeyCode::Esc => {
+                    event_handler.send(Event::Ui(Quit));
+                }
+                KeyCode::Tab => {
+                    login.editing_username = !login.editing_username;
+                }
+                KeyCode::Enter => {
+                    if !login.username_sent && !login.username_input.value().is_empty() {
+                        event_handler.send(Event::Ui(Login(LoginEvent::Username(
+                            login.username_input.value().to_string(),
+                        ))));
+                        login.editing_username = false;
+                        login.username_sent = true;
+                    }
+                    if !login.password_input.value().is_empty()  {
+                        let mut hasher = Sha3_256::new();
+                        let pass = login.password_input.value().to_string();
+                        hasher.update(pass);
+                        let hash = hasher.finalize();
 
-impl Widget for &App {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        let [header_area, input_area, messages_area] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Length(3),
-            Constraint::Min(1),
-        ]).areas(area);
+                        let mut password_hash = String::new();
 
-        let block = Block::bordered()
-            .title("{{project-name}}")
-            .title_alignment(Alignment::Center)
-            .border_type(BorderType::Rounded);
+                        for byte in hash {
+                            password_hash.push_str(&format!("{:02x}", byte));
+                        }
 
-        let text =
-            "This is a tui template.\n\
-                Press `Esc`, `Ctrl-C` or `q` to stop running.\n\
-                Press left and right to increment and decrement the counter respectively.\n\
-                Counter";
+                        event_handler
+                            .send(Event::Ui(Login(LoginEvent::Password(password_hash))));
+                    }
+                },
+                KeyCode::Up | KeyCode::Down => {
+                    login.new_user = !login.new_user;
+                },
+                _ => {
+                    let event = Key(key_event);
+                    if login.editing_username {
+                        login.username_input.handle_event(&event);
+                    } else {
+                        login.password_input.handle_event(&event);
+                    }
+                }
+            },
+            HomePage(home) => match key_event.code {
+                KeyCode::Esc => {
+                    event_handler.send(Event::Ui(Quit));
+                }
+                KeyCode::Enter => {
+                    let contents = home.input.value();
+                    if !contents.is_empty() {
+                        event_handler.send(Event::Ui(PostMessage(home.input.value_and_reset())));
+                    }
+                }
+                _ => {
+                    let event = Key(key_event);
+                    home.input.handle_event(&event);
+                }
+            },
+        }
 
-        let paragraph = Paragraph::new(text)
-            .block(block)
-            .fg(Color::Cyan)
-            .bg(Color::Black)
-            .centered();
+        Ok(())
+    }
 
-        paragraph.render(header_area, buf);
-        self.render_messages(messages_area, buf);
-        self.render_input(input_area, buf);
+    fn get_input(&self) -> Option<&Input> {
+        match self {
+            LoginPage(login) => {
+                if login.editing_username {
+                    Some(&login.username_input)
+                } else {
+                    Some(&login.password_input)
+                }
+            }
+            HomePage(home) => Some(&home.input),
+        }
+    }
+}
+
+impl Widget for &Screen {
+    fn render(self, area: Rect, buf: &mut Buffer)
+    where
+        Self: Sized,
+    {
+        match self {
+            LoginPage(login) => {
+                login.render(area, buf);
+            }
+            HomePage(home) => {
+                home.render(area, buf);
+            }
+        }
+    }
+}
+
+impl Widget for Button<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer)
+    where
+        Self: Sized
+    {
+        let (background, text, shadow, highlight) = self.colors();
+        buf.set_style(area, Style::new().bg(background).fg(text));
+
+        if area.height > 2 {
+            buf.set_string(
+                area.x,
+                area.y,
+                "▔".repeat(area.width as usize),
+                Style::new().fg(highlight).bg(background),
+            );
+        }
+        // render bottom line if there's enough space
+        if area.height > 1 {
+            buf.set_string(
+                area.x,
+                area.y + area.height - 1,
+                "▁".repeat(area.width as usize),
+                Style::new().fg(shadow).bg(background),
+            );
+        }
+
+        buf.set_line(
+            area.x + (area.width.saturating_sub(self.label.width() as u16)) / 2,
+            area.y + (area.height.saturating_sub(1)) / 2,
+            &self.label,
+            area.width,
+        );
+    }
+}
+
+impl Button<'_> {
+    const fn colors(&self) -> (Color, Color, Color, Color) {
+        let theme = &self.theme;
+        (theme.background, theme.text, theme.shadow, theme.highlight)
     }
 }
 
