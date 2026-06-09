@@ -8,36 +8,49 @@ use common::{ClientPacket};
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{ mpsc};
+use crate::app::app::Client;
 
 mod event;
 mod ui;
+pub mod ui_management;
+pub mod pages;
+pub mod state;
+pub mod app;
+pub mod components;
 
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
-    let (socket_tx, socket_rx) = mpsc::channel::<ClientPacket>(Semaphore::MAX_PERMITS);
-    let (ui_tx, ui_rx) = mpsc::channel::<ClientPacket>(Semaphore::MAX_PERMITS);
+    let (socket_tx, socket_rx) = mpsc::unbounded_channel::<ClientPacket>();
 
-    color_eyre::install()?;
+    let (client, ui_tx) = Client::new(socket_tx);
     let terminal = ratatui::init();
-    tokio::spawn(async move {
-        let result = App::new(ui_rx, socket_tx).run(terminal).await;
-        ratatui::restore();
-        result
-    });
-
-    let _ = match TcpStream::connect("127.0.0.1:8080").await {
-        Ok(s) => {
-            handle(s, ui_tx, socket_rx).await?;
-        }
-        Err(_) => {
-            ratatui::restore();
-            return Ok(());
-        }
-    };
+    client.run(terminal)?;
 
     ratatui::restore();
 
+    // let (ui_tx, ui_rx) = mpsc::channel::<ClientPacket>(Semaphore::MAX_PERMITS);
+    //
+    // color_eyre::install()?;
+    // let terminal = ratatui::init();
+    // tokio::spawn(async move {
+    //     let result = App::new(ui_rx, socket_tx).run(terminal).await;
+    //     ratatui::restore();
+    //     result
+    // });
+    //
+    // let _ = match TcpStream::connect("127.0.0.1:8080").await {
+    //     Ok(s) => {
+    //         handle(s, ui_tx, socket_rx).await?;
+    //     }
+    //     Err(_) => {
+    //         ratatui::restore();
+    //         return Ok(());
+    //     }
+    // };
+    //
+    // ratatui::restore();
+    //
     Ok(())
 }
 

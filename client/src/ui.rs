@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::thread::park;
 use crate::event::Event::Crossterm;
 use crate::event::UIEvent::{Login, MessageReceived, PostMessage, Quit};
 use crate::event::{Event, EventHandler, LoginEvent};
@@ -15,7 +16,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, ToLine};
-use ratatui::widgets::{Block, Paragraph, Widget};
+use ratatui::widgets::{Block, Paragraph, Widget, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 use ratatui::style::Color::{Red, White};
 use sha3::{Digest, Sha3_256};
@@ -306,11 +307,15 @@ impl Widget for &HomeScreen {
         let message_box = Paragraph::new(all_messages)
             .style(msg_box_style)
             .block(Block::bordered().title("Global Chat"))
-            .scroll((scroll.try_into().unwrap(), 0));
+            .scroll((scroll.try_into().unwrap(), 0))
+            .wrap(Wrap { trim: true });
+
+
 
         let input_box = Paragraph::new(self.input.value())
             .style(in_box_style)
-            .block(Block::bordered().title("Message Global Chat"));
+            .block(Block::bordered().title("Message Global Chat"))
+            .wrap(Wrap { trim: true });
 
         message_box.render(messages, buf);
         input_box.render(input, buf);
@@ -345,11 +350,13 @@ impl Widget for &LoginScreen {
 
         let buttons = Rect::new(buttons.x, buttons.y, 20, buttons.height);
 
+
         let button_layout = Layout::vertical([Constraint::Percentage(47), Constraint::Percentage(5), Constraint::Percentage(47)]);
         let [login, _, create] = buttons.layout(&button_layout);
 
         login_button.render(login, buf);
         create_button.render(create, buf);
+
 
         let username_input = Paragraph::new(self.username_input.value())
             .style(Style::default())
@@ -365,6 +372,7 @@ impl Widget for &LoginScreen {
                 Style::new().fg(Red)
             }
         };
+
 
         let password_layout = Layout::vertical([Constraint::Percentage(47), Constraint::Percentage(5), Constraint::Percentage(47)]);
         let [pass, _, confirm] = password.layout(&password_layout);

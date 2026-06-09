@@ -14,3 +14,4 @@ crossterm = { version = "0.29.0", features = ["event-stream"] }
 tui-input = { version = "*", features = ["crossterm"], default-features = false }
 color-eyre = "0.6.3"
 futures = "0.3.32"
+tui-textarea = "0.7.0"
