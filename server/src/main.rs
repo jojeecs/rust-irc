@@ -1,5 +1,5 @@
 use common::ClientPacket::{Disconnect, Handshake};
-use common::ServerEvent::{ChatMessageReceive, ConnectionAccept, ConnectionReject, LoginRequest, Error, Message, PrivateMessage, Shutdown, UserDisconnected, UsernameCheck, UsernameResponse};
+use common::ServerEvent::{ChatMessageReceive, ConnectionAccept, ConnectionReject, LoginRequest, Error, Message, PrivateMessage, Shutdown, UserDisconnected, UsernameCheck, UsernameResponse, DirectMessageExternal};
 use common::{ClientPacket, HandshakePacket, Server, ServerEvent, Session, User};
 use rand::{Rng, rng};
 use std::collections::HashMap;
@@ -221,6 +221,9 @@ async fn writer_socket(mut receiver: Receiver<ServerEvent>, mut stream: Encrypte
 fn event_to_packet(server_event: ServerEvent) -> ClientPacket {
     match server_event {
         Message { contents } => ClientPacket::PublicMessage { contents },
+        DirectMessageExternal {to, from, contents} => {
+            ClientPacket::PrivateMessage {to, contents}
+        }
         _ => Disconnect,
     }
 }
@@ -427,8 +430,8 @@ async fn handle_pm(
             return;
         }
     };
-    let _ = to_session.sender.send(Message {contents: from_formatted}).await;
-    let _ = from_session.sender.send(Message {contents: to_formatted}).await;
+    let _ = to_session.sender.send(DirectMessageExternal {to: to.username.clone(), from: from.username.clone(), contents: from_formatted}).await;
+    let _ = from_session.sender.send(DirectMessageExternal {to: to.username.clone(), from: from.username.clone(), contents: to_formatted}).await;
 }
 async fn handle_client_disconnect(
     user: &User,

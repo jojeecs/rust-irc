@@ -108,6 +108,11 @@ pub enum ServerEvent {
     Message {
         contents: String,
     },
+    DirectMessageExternal {
+        to: String,
+        from: String,
+        contents: String,
+    },
     PrivateMessage {
         to: String,
         from: usize,

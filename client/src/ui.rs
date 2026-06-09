@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use crate::event::Event::Crossterm;
 use crate::event::UIEvent::{Login, MessageReceived, PostMessage, Quit};
 use crate::event::{Event, EventHandler, LoginEvent};
@@ -9,7 +10,7 @@ use common::HandshakePacket::{ClientLogin, ClientUsername};
 use common::{ClientPacket, LoginInfo};
 use crossterm::event;
 use crossterm::event::Event::Key;
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
@@ -21,6 +22,7 @@ use sha3::{Digest, Sha3_256};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler as EvtHandler;
+use crate::ui::Attention::{DmBox, MessageBox, RoomsBox};
 
 #[derive(Debug)]
 pub struct App {
@@ -38,6 +40,7 @@ struct Button<'a> {
     theme: Theme
 }
 
+#[derive(Clone)]
 struct Theme {
     text: Color,
     highlight: Color,
@@ -56,6 +59,15 @@ pub enum Screen {
 pub struct HomeScreen {
     pub messages: Vec<String>,
     pub input: Input,
+    pub private_messages: HashMap<String, Vec<String>>,
+    attention: Attention,
+}
+
+#[derive(Debug)]
+pub enum Attention {
+    MessageBox,
+    RoomsBox,
+    DmBox,
 }
 
 #[derive(Debug)]
@@ -167,10 +179,28 @@ impl App {
                             home.messages.push(contents);
                         }
                     },
+                    PrivateMessage {to, contents} => {
+                        match &mut self.screen {
+                            HomePage(home) => {
+                                if let Some(list) = home.private_messages.get(&to) {
+                                    let mut current_messages = list.clone();
+                                    current_messages.push(contents);
+                                    home.private_messages.insert(to, current_messages);
+                                } else {
+                                    home.private_messages.insert(to, vec![contents]);
+                                }
+                            }
+                            _ => {
+
+                            }
+                        }
+                    },
                     ClientPacket::ConnectionAccepted => {
                         self.screen = HomePage(HomeScreen {
                             messages: self.messages.clone(),
                             input: Default::default(),
+                            private_messages: HashMap::new(),
+                            attention: MessageBox,
                         });
                     },
                     ClientPacket::ConnectionRejected {..} => {
@@ -189,7 +219,7 @@ impl App {
 
     fn render(&self, frame: &mut Frame, prompt: &str) {
         let [title, rest] =
-            Layout::vertical([Constraint::Percentage(5), Constraint::Percentage(95)])
+            Layout::vertical([Constraint::Percentage(3), Constraint::Percentage(97)])
                 .areas(frame.area());
 
         let notifications = Line::raw(prompt).style(Style::default());
@@ -207,11 +237,26 @@ impl App {
                     let y = if login.editing_username { 1 } else { 4 };
                     frame.set_cursor_position((frame.area().x + x as u16, rest.y + y));
                 }
-                HomePage(_) => {
-                    frame.set_cursor_position((
-                        frame.area().x + x as u16,
-                        frame.area().y + frame.area().height - 2,
-                    ));
+                HomePage(home) => {
+                    match home.attention {
+                        MessageBox => {
+                            frame.set_cursor_position((
+                                frame.area().width.div_ceil(4) + x as u16,
+                                frame.area().y + frame.area().height - 5,
+                            ));
+                        } RoomsBox => {
+                            frame.set_cursor_position((
+                                frame.area().x + 1,
+                                frame.area().y + x as u16 + 2,
+                            ));
+                        }
+                        DmBox => {
+                            frame.set_cursor_position((
+                                (frame.area().width - frame.area().width.div_ceil(4)) + x as u16,
+                                frame.area().y + x as u16 + 2,
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -235,21 +280,40 @@ impl Widget for &HomeScreen {
     where
         Self: Sized,
     {
-        let layout = Layout::vertical([Constraint::Min(0), Constraint::Length(3)]);
-        let [messages_area, input_area] = area.layout(&layout);
+        let home_layout = Layout::horizontal([Constraint::Percentage(25), Constraint::Percentage(50), Constraint::Percentage(25)]);
+        let [left, center, right] = area.layout(&home_layout);
 
-        // Simple message display using a list of paragraphs or a single paragraph with newlines
+        let center_layout = Layout::vertical([Constraint::Min(0), Constraint::Length(6)]);
+        let [messages, input] = center.layout(&center_layout);
+
+        let rooms = vec!["Global"];
+
+        let msg_box_style = Style::new().fg(White);
+        let in_box_style = Style::default();
+
+        let rooms_box = Paragraph::new(rooms.join("\n"))
+            .style(msg_box_style)
+            .block(Block::bordered().title("Rooms"));
+
+        rooms_box.render(left, buf);
+
+        let mut scroll = 0;
+        if self.messages.len() > messages.height as usize - 3 {
+            scroll = (self.messages.len() + 2) - messages.height as usize;
+        }
+
         let all_messages = self.messages.join("\n");
-        let messages = Paragraph::new(all_messages)
-            .style(Style::default())
-            .block(Block::bordered().title("Messages"));
+        let message_box = Paragraph::new(all_messages)
+            .style(msg_box_style)
+            .block(Block::bordered().title("Global Chat"))
+            .scroll((scroll.try_into().unwrap(), 0));
 
-        let input = Paragraph::new(self.input.value())
-            .style(Style::default())
-            .block(Block::bordered().title("Input"));
+        let input_box = Paragraph::new(self.input.value())
+            .style(in_box_style)
+            .block(Block::bordered().title("Message Global Chat"));
 
-        messages.render(messages_area, buf);
-        input.render(input_area, buf);
+        message_box.render(messages, buf);
+        input_box.render(input, buf);
     }
 }
 
@@ -258,44 +322,40 @@ impl Widget for &LoginScreen {
     where
         Self: Sized,
     {
-        let login_layout = Layout::vertical([Constraint::Max(3), Constraint::Max(3), Constraint::Max(3), Constraint::Max(5)]);
-        let [username_area, password_area, confirm_password, switch_login_new_user] = area.layout(&login_layout);
+        let layout = Layout::vertical([Constraint::Max(3), Constraint::Max(6), Constraint::Max(5)]);
+        let [username, password, buttons] = area.layout(&layout);
 
-        let mut login_button_bg = Color::Rgb(28, 41, 82);
-        let mut new_user_button_bg = Color::Rgb(28, 41, 82);
+        let theme = Theme {
+            text: Color::Rgb(255, 255, 255),
+            background: Color::Rgb(28, 41, 82),
+            highlight: Color::Rgb(64, 96, 192),
+            shadow: Color::Rgb(32, 48, 96),
+        };
+        let mut theme_sel = theme.clone();
+        theme_sel.background = Red;
+
+        let mut login_button = Button { label: "Login".to_line(), theme: theme.clone() };
+        let mut create_button = Button { label: "Create new user".to_line(), theme };
+
         if self.new_user {
-            new_user_button_bg =  Color::Rgb(48, 72, 144);
+            create_button.theme = theme_sel;
         } else {
-            login_button_bg =  Color::Rgb(48, 72, 144);
+            login_button.theme = theme_sel;
         }
 
-        let login_button = Button { label: "Login".to_line(), theme: Theme {
-            text: Color::Rgb(255, 255, 255),
-            background: login_button_bg,
-            highlight: Color::Rgb(64, 96, 192),
-            shadow: Color::Rgb(32, 48, 96),
-        } };
+        let buttons = Rect::new(buttons.x, buttons.y, 20, buttons.height);
 
-        let new_user_button = Button { label: "New User".to_line(), theme: Theme {
-            text: Color::Rgb(255, 255, 255),
-            background: new_user_button_bg,
-            highlight: Color::Rgb(64, 96, 192),
-            shadow: Color::Rgb(32, 48, 96),
-        } };
-
-
-        let button_layout = Layout::vertical([Constraint::Percentage(45), Constraint::Percentage(10), Constraint::Percentage(45)]);
-
-        let [login, _, new_user] = switch_login_new_user.layout(&button_layout);
+        let button_layout = Layout::vertical([Constraint::Percentage(47), Constraint::Percentage(5), Constraint::Percentage(47)]);
+        let [login, _, create] = buttons.layout(&button_layout);
 
         login_button.render(login, buf);
-        new_user_button.render(new_user, buf);
+        create_button.render(create, buf);
 
         let username_input = Paragraph::new(self.username_input.value())
             .style(Style::default())
             .block(Block::bordered().title("Username"));
 
-        username_input.render(username_area, buf);
+        username_input.render(username, buf);
 
         let pass_style = match self.password_accepted {
             true => {
@@ -306,15 +366,18 @@ impl Widget for &LoginScreen {
             }
         };
 
+        let password_layout = Layout::vertical([Constraint::Percentage(47), Constraint::Percentage(5), Constraint::Percentage(47)]);
+        let [pass, _, confirm] = password.layout(&password_layout);
+
         let password_input = Paragraph::new(self.password_input.value())
             .style(pass_style)
             .block(Block::bordered().title("Password"));
-        password_input.render(password_area, buf);
+        password_input.render(pass, buf);
         if self.new_user {
             let confirm_password_input =  Paragraph::new(self.password_input.value())
                 .style(pass_style)
                 .block(Block::bordered().title("Confirm password"));
-            confirm_password_input.render(confirm_password, buf);
+            confirm_password_input.render(confirm, buf);
         }
     }
 }
@@ -372,7 +435,18 @@ impl Screen {
             HomePage(home) => match key_event.code {
                 KeyCode::Esc => {
                     event_handler.send(Event::Ui(Quit));
-                }
+                },
+                KeyCode::Tab => {
+                    match home.attention {
+                        MessageBox => {
+                            home.attention = DmBox;
+                        } RoomsBox => {
+                            home.attention = MessageBox;
+                        }, DmBox => {
+                            home.attention = RoomsBox;
+                        }
+                    }
+                },
                 KeyCode::Enter => {
                     let contents = home.input.value();
                     if !contents.is_empty() {
