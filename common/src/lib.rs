@@ -1,3 +1,5 @@
+pub mod room;
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -5,6 +7,7 @@ use std::sync::Arc;
 use clavis::protocol;
 use tokio::sync::mpsc::{Receiver, Sender};
 use turso::{Builder, Connection, Row};
+use crate::room::room::{Room, RoomStore};
 
 const UID_COLUMN: usize = 0;
 const USERNAME_COLUMN: usize = 1;
@@ -25,8 +28,6 @@ pub struct SessionInfo {
     pub uid_connected: usize,
 }
 
-#[derive(Debug)]
-pub struct Member;
 
 #[derive(Debug)]
 pub struct User {
@@ -43,38 +44,24 @@ pub struct LoginInfo {
 pub struct Server {
     pub user_id_map: HashMap<usize, (Arc<User>, Arc<Session>)>,
     pub username_map: HashMap<String, usize>,
+    pub room_store: RoomStore,
     pub receiver: Receiver<ServerEvent>,
-    pub next_uid: usize,
     pub db_conn: Connection,
 }
 
-pub struct ServerDB {
-    pub login_info_vec: Vec<LoginInfo>,
-}
-protocol! {
-    #[derive(Debug)]
-    pub enum HandshakePacket {
-        Hello,
-        ClientUsername { username: String },
-        ServerUsernameCheck { name_taken: bool },
-        ClientLogin { login_info: LoginInfo },
-        ServerLoginCheck { correct_password: bool },
-    }
-}
 
 protocol! {
     #[derive(Debug)]
     pub enum ClientPacket {
+        ConnectRequest { ip: String },
         PublicMessage { contents: String },
         PrivateMessage { to: String, contents: String },
         LoginRequestPacket { username: String, password: String },
         ConnectionRejected { reason: String },
         ConnectionAccepted,
-        InitialRequest { username: String },
-        InitialResponse { username: String, new_user: bool },
-        AvailableRooms { rooms: Vec<String> },
+        AuthenticationRejected,
+        AuthenticationAccepted,
         Error { reason: String },
-        Handshake{ handshake_packet: HandshakePacket },
         Disconnect,
     }
 }
@@ -92,14 +79,6 @@ pub enum ServerEvent {
     },
     ConnectionReject {
         reason: String,
-    },
-    UsernameCheck {
-        username: String,
-        sender: Arc<Sender<ServerEvent>>,
-    },
-    UsernameResponse {
-        username: String,
-        name_taken: bool,
     },
     ChatMessageReceive {
         from: usize,
@@ -138,8 +117,8 @@ impl Server {
         Server {
             user_id_map: HashMap::new(),
             username_map: HashMap::new(),
+            room_store: RoomStore::new(),
             receiver,
-            next_uid: 0,
             db_conn,
         }
     }
@@ -341,14 +320,6 @@ impl Session {
 impl User {
     pub fn new(username: String, user_id: usize) -> User {
         User { username, user_id }
-    }
-}
-
-impl ServerDB {
-    pub fn new() -> ServerDB {
-        ServerDB {
-            login_info_vec: Vec::new(),
-        }
     }
 }
 

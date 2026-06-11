@@ -1,26 +1,14 @@
 use color_eyre::eyre::OptionExt;
 use common::ClientPacket;
 use futures::{FutureExt, StreamExt};
-use ratatui::crossterm::event::Event as CrosstermEvent;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use crate::state::action::Action;
 
 pub enum Event {
     Tick,
     Crossterm(crossterm::event::Event),
-    Ui(UIEvent),
-}
-
-pub enum UIEvent {
-    Quit,
-    MessageReceived(ClientPacket),
-    PostMessage(String),
-    Login(LoginEvent),
-}
-
-pub enum LoginEvent {
-    Username(String),
-    Password(String),
+    ActionEvent(Action),
 }
 
 #[derive(Debug)]
