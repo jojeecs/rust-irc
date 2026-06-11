@@ -1,19 +1,20 @@
-use crossterm::event;
-use crossterm::event::KeyEvent;
-use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender};
+use crossterm::event::Event::Key;
+use tokio::sync::mpsc::{UnboundedSender};
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc::UnboundedReceiver;
 use common::ClientPacket;
+use crate::event::{Event, EventHandler};
+use crate::pages::home_page::home_page::HomePage;
 use crate::state::action::Action;
 use crate::state::state::{ConnectionState, LoginState};
-use crate::ui_management::ui_manager::{Page, Screen, UiManager};
+use crate::ui_management::ui_manager::{Screen, UiManager};
 
 pub struct Client {
     ui_manager: UiManager,
     connection_state: ConnectionState,
-    login_state: LoginState,
     socket_tx: UnboundedSender<ClientPacket>,
-    ui_rx: UnboundedReceiver<Action>
+    ui_rx: UnboundedReceiver<Action>,
+    events: EventHandler,
 }
 
 impl Client {
@@ -23,23 +24,45 @@ impl Client {
         (Self {
             ui_manager,
             connection_state: ConnectionState { connected: true },
-            login_state: LoginState::default(),
             socket_tx,
-            ui_rx
+            ui_rx,
+            events: EventHandler::new()
         }, ui_tx)
     }
 
-    pub fn run(mut self, mut terminal: DefaultTerminal) -> color_eyre::Result<()> {
+    pub async fn run(mut self, mut terminal: DefaultTerminal) -> color_eyre::Result<()> {
         while self.connection_state.connected {
             let _ = terminal.draw(|frame| self.ui_manager.draw(frame));
 
-            let event = event::read()?;
-
-            match event.as_key_event() {
-                None => {}
-                Some(key_event) => {
-                    self.ui_manager.handle_input(key_event);
+            match self.events.next().await? {
+                Event::Crossterm(event) => {
+                    match event {
+                        Key(key_event) => {
+                            self.ui_manager.handle_input(key_event, &mut self.events);
+                        }
+                        _ => {}
+                    }
                 }
+                Event::ActionEvent(action) => {
+                    match action {
+                        Action::LoginAttempt {username, password} => {
+                            if let Err(e) = self.socket_tx.send(ClientPacket::LoginRequestPacket {username, password}) {
+                                eprintln!("Application error: {}", e);
+                            }
+                        },
+                        Action::Exit => {
+                            self.connection_state.connected = false;
+                        },
+                        Action::SendMessage {contents} => {
+                            self.socket_tx.send(ClientPacket::PublicMessage {contents})?;
+                        },
+                        Action::SocketMessage {packet} => {
+                            self.socket_tx.send(packet)?;
+                        },
+                        _ => {}
+                    }
+                }
+                _ => {}
             }
             self.tick();
         }
@@ -47,16 +70,28 @@ impl Client {
     }
 
     fn tick(&mut self) {
-        if let Ok(msg) = self.ui_rx.try_recv() {
-            match msg {
-                Action::Exit => {
-                    self.connection_state.connected = false;
-                },
-                Action::LoginAttempt {username, password} => {
-                    if let Err(e) = self.socket_tx.send(ClientPacket::LoginRequestPacket {username, password}) {
-                        eprintln!("Application error: {}", e);
+        if let Ok(pkt) = self.ui_rx.try_recv() {
+            match pkt {
+                Action::SocketMessage {packet} => {
+                    match packet {
+                        ClientPacket::AuthenticationRejected {..} => {
+                            self.ui_manager.current_screen.add_notification(&LoginState::INCORRECT_INFORMATION);
+                        },
+                        ClientPacket::AuthenticationAccepted => {
+                            self.ui_manager.switch_screen(Screen::Home(HomePage::new(self.ui_manager.app_tx.clone())))
+                        }
+                        ClientPacket::PublicMessage {contents} => {
+                            self.ui_manager.handle_msg(contents);
+                        }
+                        _ => {}
                     }
                 },
+                Action::ServerConnectionAccepted => {
+                    self.ui_manager.signal_connection();
+                },
+                Action::ServerConnectionFailed => {
+                    self.ui_manager.current_screen.add_notification(LoginState::SERVER_DOWN);
+                }
                 _ => {}
             }
         }

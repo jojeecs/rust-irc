@@ -1,5 +1,9 @@
+use std::sync::Arc;
+use common::room::room::Room;
+use crate::pages::home_page::home_page::HomeField;
+use crate::pages::home_page::home_page::HomeField::MessageBox;
 use crate::pages::login_page::login_page::{LoginField, LoginStatus};
-use crate::pages::login_page::login_page::LoginStatus::Idle;
+use crate::pages::login_page::login_page::LoginStatus::{Connecting, Idle};
 
 pub struct LoginState {
     pub status: LoginStatus,
@@ -7,14 +11,30 @@ pub struct LoginState {
     pub errors: Vec<String>
 }
 
+pub struct HomeState {
+    pub current_room: Room,
+    pub current_field: HomeField,
+}
+
 pub struct ConnectionState {
     pub connected: bool,
 }
+
+impl HomeState {
+    pub fn new(current_room: Room) -> Self {
+        Self {
+            current_room,
+            current_field: MessageBox
+        }
+    }
+}
+
 
 impl LoginState {
     pub const USERNAME_EMPTY_ERR: &'static str = "Username cannot be empty.";
     pub const PASSWORD_EMPTY_ERR: &'static str = "Password cannot be empty.";
     pub const INCORRECT_INFORMATION: &'static str = "Incorrect username or password.";
+    pub const SERVER_DOWN: &'static str = "Unable to connect to server with given IP & port.";
 
     pub fn has_error(&self, error: &str) -> bool {
         self.errors.contains(&error.to_string())
@@ -48,9 +68,9 @@ impl LoginState {
 impl Default for LoginState {
     fn default() -> Self {
         Self {
-            focused_field: LoginField::Username,
+            focused_field: LoginField::IP,
             errors: Vec::default(),
-            status: Idle
+            status: Connecting
         }
     }
 }

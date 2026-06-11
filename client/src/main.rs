@@ -1,18 +1,14 @@
-use crate::ui::App;
 use clavis::{EncryptedPacket, EncryptedReader, EncryptedStream, EncryptedWriter};
-use common::ClientPacket::{
-    ConnectionAccepted, ConnectionRejected, Handshake,
-};
-use common::HandshakePacket::{ServerLoginCheck};
 use common::{ClientPacket};
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::{ mpsc};
 use crate::app::app::Client;
+use crate::state::action::Action;
+use crate::state::action::Action::{ServerConnectionAccepted, ServerConnectionFailed, SocketMessage};
 
 mod event;
-mod ui;
 pub mod ui_management;
 pub mod pages;
 pub mod state;
@@ -25,39 +21,44 @@ async fn main() -> color_eyre::Result<()> {
 
     let (client, ui_tx) = Client::new(socket_tx);
     let terminal = ratatui::init();
-    client.run(terminal)?;
+
+    tokio::spawn(async move {
+        let _ = wait_for_ip(ui_tx, socket_rx).await;
+    });
+
+    client.run(terminal).await?;
 
     ratatui::restore();
+    Ok(())
+}
 
-    // let (ui_tx, ui_rx) = mpsc::channel::<ClientPacket>(Semaphore::MAX_PERMITS);
-    //
-    // color_eyre::install()?;
-    // let terminal = ratatui::init();
-    // tokio::spawn(async move {
-    //     let result = App::new(ui_rx, socket_tx).run(terminal).await;
-    //     ratatui::restore();
-    //     result
-    // });
-    //
-    // let _ = match TcpStream::connect("127.0.0.1:8080").await {
-    //     Ok(s) => {
-    //         handle(s, ui_tx, socket_rx).await?;
-    //     }
-    //     Err(_) => {
-    //         ratatui::restore();
-    //         return Ok(());
-    //     }
-    // };
-    //
-    // ratatui::restore();
-    //
+async fn wait_for_ip(ui_tx: UnboundedSender<Action>, mut socket_rx: UnboundedReceiver<ClientPacket>) -> color_eyre::Result<()> {
+    let str: TcpStream;
+    loop {
+        if let Some(pkt) = socket_rx.recv().await {
+            match pkt {
+                ClientPacket::ConnectRequest { ip } => {
+                    if let Ok(stream) = TcpStream::connect(ip).await {
+                        ui_tx.send(ServerConnectionAccepted)?;
+                        str = stream;
+                        break;
+                    } else {
+                        ui_tx.send(ServerConnectionFailed)?;
+                    }
+                }
+                _ => {  }
+            }
+        }
+    }
+    handle(str, ui_tx, socket_rx).await?;
+
     Ok(())
 }
 
 async fn handle(
     stream: TcpStream,
-    ui_tx: Sender<ClientPacket>,
-    mut socket_rx: Receiver<ClientPacket>,
+    ui_tx: UnboundedSender<Action>,
+    socket_rx: UnboundedReceiver<ClientPacket>,
 ) -> color_eyre::Result<()> {
     let encrypted = match EncryptedStream::new(stream, None).await {
         Ok(s) => s,
@@ -66,45 +67,7 @@ async fn handle(
             return Ok(());
         }
     };
-    let (mut read_stream, mut write_stream) = encrypted.split();
-    loop {
-        match socket_rx.recv().await {
-            Some(Handshake { handshake_packet }) => match handshake_packet {
-                _ => {
-                    write_stream
-                        .write_packet(&Handshake { handshake_packet })
-                        .await?;
-
-                    if let Ok(Handshake { handshake_packet }) = read_stream.read_packet().await {
-                        match handshake_packet {
-                            ServerLoginCheck { correct_password } => {
-                                if correct_password {
-                                    ui_tx.send(ConnectionAccepted).await?;
-                                    break;
-                                } else {
-                                    ui_tx
-                                        .send(ConnectionRejected {
-                                            reason: "Incorrect password".to_string(),
-                                        })
-                                        .await?;
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            },
-            Some(ClientPacket::Disconnect) => {
-                return Ok(());
-            }
-            None => {
-                println!("Received nothing.");
-            }
-            _ => {
-                break;
-            }
-        }
-    }
+    let (read_stream, write_stream) = encrypted.split();
     tokio::spawn(async move {
         read_socket(read_stream, ui_tx).await;
     });
@@ -118,7 +81,7 @@ async fn handle(
 
 async fn read_socket(
     mut stream: EncryptedReader<ReadHalf<TcpStream>>,
-    ui_tx: Sender<ClientPacket>,
+    ui_tx: UnboundedSender<Action>,
 ) {
     loop {
         let packet: ClientPacket = match stream.read_packet().await {
@@ -129,13 +92,13 @@ async fn read_socket(
             }
         };
 
-        let _ = ui_tx.send(packet).await;
+        let _ = ui_tx.send(SocketMessage {packet});
     }
 }
 
 async fn write_socket(
     mut stream: EncryptedWriter<WriteHalf<TcpStream>>,
-    mut socket_rx: Receiver<ClientPacket>,
+    mut socket_rx: UnboundedReceiver<ClientPacket>,
 ) {
     loop {
         if let Some(msg) = socket_rx.recv().await {
