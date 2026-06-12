@@ -9,15 +9,15 @@ use crate::state::action::Action;
 use crate::state::state::{ConnectionState, LoginState};
 use crate::ui_management::ui_manager::{Screen, UiManager};
 
-pub struct Client {
-    ui_manager: UiManager,
+pub struct Client<'a> {
+    ui_manager: UiManager<'a>,
     connection_state: ConnectionState,
     socket_tx: UnboundedSender<ClientPacket>,
     ui_rx: UnboundedReceiver<Action>,
     events: EventHandler,
 }
 
-impl Client {
+impl<'a> Client<'a> {
     pub fn new(socket_tx: UnboundedSender<ClientPacket>) -> (Self, UnboundedSender<Action>)  {
         let (ui_manager, ui_rx, ui_tx) = UiManager::new();
 
@@ -81,6 +81,7 @@ impl Client {
                             self.ui_manager.current_screen.add_notification(&LoginState::INCORRECT_INFORMATION);
                         },
                         ClientPacket::AuthenticationAccepted { new_user } => {
+
                             if !new_user {
                                 self.ui_manager.switch_screen(Screen::Home(HomePage::new(self.ui_manager.app_tx.clone())))
                             }

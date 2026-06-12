@@ -7,6 +7,5 @@ pub enum Action {
     LoginAttempt { username: String, password: String },
     SendMessage { contents: String },
     SocketMessage { packet: ClientPacket },
-    ScreenCompletion { new_screen_to_show: Screen },
     Exit,
 }

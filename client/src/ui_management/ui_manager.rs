@@ -1,3 +1,4 @@
+use std::ops::Div;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -12,10 +13,10 @@ use crate::pages::login_page::login_page::LoginStatus::Idle;
 use crate::state::action::Action;
 use crate::state::action::Action::Exit;
 
-pub enum Screen {
+pub enum Screen<'a> {
     Connect,
     Login(LoginPage),
-    Home(HomePage),
+    Home(HomePage<'a>),
     Settings,
 }
 
@@ -24,12 +25,12 @@ pub trait Page {
     fn handle_event(&mut self, event: KeyEvent, event_handler: &mut EventHandler);
 }
 
-pub struct UiManager {
+pub struct UiManager<'a> {
     pub app_tx: UnboundedSender<Action>,
-    pub current_screen: Screen,
+    pub current_screen: Screen<'a>,
 }
 
-impl UiManager {
+impl<'a> UiManager<'a> {
     pub fn new() -> (Self, UnboundedReceiver<Action>, UnboundedSender<Action>) {
         let (app_tx, app_rx) = mpsc::unbounded_channel::<Action>();
 
@@ -51,12 +52,12 @@ impl UiManager {
             _ => {}
         }
     }
-    
+
     pub fn handle_resize(&mut self, x: u16, y: u16) {
-        
+        self.current_screen.handle_resize(x, y);
     }
 
-    pub fn switch_screen(&mut self, new_screen: Screen) {
+    pub fn switch_screen(&mut self, new_screen: Screen<'a>) {
         self.current_screen = new_screen;
     }
 
@@ -69,7 +70,7 @@ impl UiManager {
     }
 }
 
-impl Screen {
+impl<'a> Screen<'a> {
     pub fn handle_input(&mut self, event: KeyEvent, event_handler: &mut EventHandler) {
         match event.code {
             KeyCode::Esc => {
@@ -102,6 +103,7 @@ impl Screen {
     pub fn handle_msg(&mut self, message: String) {
         match self {
             Screen::Home(home) => {
+                home.state.messages.push(message.clone());
                 home.message_box.new_msg(&message);
             }
             _ => {}
@@ -113,6 +115,15 @@ impl Screen {
             Screen::Login(login) => {
                 login.state.add_error(error);
             }
+            _ => {}
+        }
+    }
+
+    pub fn handle_resize(&mut self, x: u16, y: u16) {
+        match self {
+            Screen::Home(home) => {
+                home.message_box.calculate_lines(x.div_ceil(3) as usize, &home.state.messages);
+            },
             _ => {}
         }
     }

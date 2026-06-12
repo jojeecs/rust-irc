@@ -14,6 +14,7 @@ pub struct LoginState {
 pub struct HomeState {
     pub current_room: Room,
     pub current_field: HomeField,
+    pub messages: Vec<String>,
 }
 
 pub struct ConnectionState {
@@ -24,7 +25,8 @@ impl HomeState {
     pub fn new(current_room: Room) -> Self {
         Self {
             current_room,
-            current_field: MessageInput
+            current_field: MessageInput,
+            messages: Vec::new(),
         }
     }
 }

@@ -16,11 +16,11 @@ use crate::state::state::{HomeState};
 use crate::ui_management::ui_manager::Page;
 use crate::components::message::{MessageBox as mbox, MessageBox};
 
-pub struct HomePage {
+pub struct HomePage<'a> {
     pub state: HomeState,
     pub ui_tx: UnboundedSender<Action>,
     pub message_input: InputField,
-    pub message_box: mbox,
+    pub message_box: mbox<'a>,
 }
 
 pub enum HomeField {
@@ -29,17 +29,17 @@ pub enum HomeField {
     Settings,
 }
 
-impl HomePage {
+impl<'a> HomePage<'a> {
     pub fn new(ui_tx: UnboundedSender<Action>) -> Self {
         Self {
             state: HomeState::new(Room::new("Global".to_string())),
             ui_tx,
             message_input: InputField::default(),
-            message_box: mbox::new(50)
+            message_box: mbox::new(crossterm::terminal::size().unwrap().0 as usize / 3)
         }
     }
 }
-impl Page for HomePage {
+impl<'a> Page for HomePage<'a> {
     fn draw(&self, frame: &mut Frame, area: Rect) {
         let center_area = area.centered(Constraint::Length(area.width.div(3)), Constraint::Percentage(100));
         let rooms_area = Rect::new(area.x, area.y, area.width.div(3), area.height);
@@ -90,7 +90,7 @@ impl Page for HomePage {
     }
 }
 
-impl HomePage {
+impl<'a> HomePage<'a> {
     fn render_center(&self, frame: &mut Frame, area: Rect) {
         let lines = self.message_box.lines;
 
@@ -98,8 +98,6 @@ impl HomePage {
         let mut input_box = area.centered(Constraint::Percentage(100), Constraint::Length(3));
 
         input_box.y = messages_box.bottom();
-
-        let messages = &self.message_box.messages;
 
         let mut scroll_needed = 0;
 
@@ -111,7 +109,7 @@ impl HomePage {
 
         let mut user_input = self.message_input.input.value().to_string();
 
-        let wrapped_data = MessageBox::wrap_msg(area.width as usize, user_input);
+        let wrapped_data = MessageBox::wrap_msg(area.width as usize - 2, user_input);
 
         user_input = wrapped_data.0;
         let new_lines_needed = wrapped_data.1 as u16 - 1;
@@ -119,8 +117,7 @@ impl HomePage {
         input_box.height += new_lines_needed;
         input_box.y -= new_lines_needed;
 
-
-        let messages = Paragraph::new(messages.join("\n"))
+        let messages = Paragraph::new(self.message_box.text.clone())
             .block(Block::new().borders(Borders::ALL).border_type(BorderType::Double)).scroll((scroll_needed as u16, 0));
 
         let message_input = Paragraph::new(user_input).block(Block::new().borders(Borders::ALL).border_type(BorderType::Plain)).scroll((0, 0));
