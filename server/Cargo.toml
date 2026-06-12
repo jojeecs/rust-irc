@@ -10,4 +10,11 @@ tokio = { version = "1", features = ["full"] }
 clavis = { git = "https://github.com/pyrohost/clavis" }
 cliclack = "0.5.4"
 regex = "1.12.3"
-log = "0.4.30"
+
+
+[profile.release]
+opt-level = "z"
+lto = true          # Enable Link Time Optimization
+codegen-units = 1   # Reduce number of codegen units to increase optimizations.
+panic = "abort"     # Abort on panic
+strip = true

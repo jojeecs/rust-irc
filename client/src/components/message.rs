@@ -2,6 +2,7 @@ pub struct MessageBox {
    pub messages: Vec<String>,
    pub width: usize,
    pub lines: usize,
+   pub scroll_amount: usize,
 }
 
 impl MessageBox {
@@ -10,12 +11,14 @@ impl MessageBox {
          messages: Vec::new(),
          width,
          lines: 0,
+         scroll_amount: 0,
       }
    }
 
    pub fn new_msg(&mut self, msg: &String) {
-      self.messages.push(msg.clone());
-      self.lines += 1;
+      let msg = Self::wrap_msg(self.width, msg.clone());
+      self.messages.push(msg.0);
+      self.lines += msg.1;
    }
 
    pub fn wrap_msg(width: usize, mut msg: String) -> (String, usize) {

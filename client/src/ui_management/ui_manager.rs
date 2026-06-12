@@ -1,10 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::text::Line;
 use tokio::sync::{mpsc};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use crate::components::message::MessageBox;
 use crate::event::Event::ActionEvent;
 use crate::event::EventHandler;
 use crate::pages::home_page::home_page::HomePage;
@@ -53,6 +51,10 @@ impl UiManager {
             _ => {}
         }
     }
+    
+    pub fn handle_resize(&mut self, x: u16, y: u16) {
+        
+    }
 
     pub fn switch_screen(&mut self, new_screen: Screen) {
         self.current_screen = new_screen;
@@ -100,11 +102,7 @@ impl Screen {
     pub fn handle_msg(&mut self, message: String) {
         match self {
             Screen::Home(home) => {
-                let msg = MessageBox::wrap_msg(50, message);
-                let lines_added = msg.1;
-                home.message_box.lines += lines_added;
-                
-                home.state.current_room.messages.push(msg.0);
+                home.message_box.new_msg(&message);
             }
             _ => {}
         }

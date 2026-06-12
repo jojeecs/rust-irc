@@ -10,7 +10,7 @@ use crate::components::input::{InputField};
 use crate::event::{EventHandler};
 use crate::event::Event::ActionEvent;
 use crate::state::action::Action;
-use crate::state::action::Action::{Exit, LoginAttempt};
+use crate::state::action::Action::{LoginAttempt};
 use crate::state::state::LoginState;
 use crate::ui_management::ui_manager::Page;
 
@@ -18,6 +18,7 @@ pub enum LoginField {
     IP,
     Username,
     Password,
+    ConfirmPassword,
 }
 
 pub enum LoginStatus {
@@ -95,11 +96,9 @@ impl Page for LoginPage {
 
                 let help_message = Paragraph::new("Press <Enter> to submit").centered();
 
-
                 frame.render_widget(username_input, username_box);
                 frame.render_widget(password_input, password_box);
                 frame.render_widget(help_message, help_box);
-
 
                 match self.state.focused_field {
                     LoginField::Username => {

@@ -60,7 +60,7 @@ protocol! {
         ConnectionRejected { reason: String },
         ConnectionAccepted,
         AuthenticationRejected,
-        AuthenticationAccepted,
+        AuthenticationAccepted { new_user: bool },
         Error { reason: String },
         Disconnect,
     }
@@ -73,11 +73,11 @@ pub enum ServerEvent {
         sender: Arc<Sender<ServerEvent>>,
         ip_src: IpAddr,
     },
-    ConnectionAccept {
+    AuthenticationAccept {
         user: Arc<User>,
-        session: Arc<Session>,
+        new_user: bool,
     },
-    ConnectionReject {
+    AuthenticationReject {
         reason: String,
     },
     ChatMessageReceive {
@@ -157,6 +157,13 @@ impl Server {
         None
     }
 
+    pub async fn get_session_from_username(&self, username: String) -> Option<Arc<Session>> {
+        let found = self.user_id_map.get(self.username_map.get(&username)?)?;
+        let session = found.clone().1;
+
+        Some(session)
+    }
+
     pub async fn get_user_from_uid(&self, uid: usize) -> Option<User> {
         let query = format!("SELECT * FROM user WHERE uid = {}", uid);
         let mut result = match self.db_conn.query(query, ()).await {
@@ -193,7 +200,7 @@ impl Server {
         None
     }
 
-    async fn name_taken(&self, username: &String) -> bool {
+    pub async fn user_exists(&self, username: &String) -> bool {
         let command = format!("SELECT DISTINCT * FROM users WHERE LOWER(username) LIKE LOWER('%{}%')", username);
         let result = self.run_query(command).await.unwrap_or_else(|| Vec::new());
 
@@ -255,9 +262,6 @@ impl Server {
     }
 
     pub async fn create_new_user(&self, username: String, password: String) -> Option<User> {
-        if self.name_taken(&username).await {
-            return None;
-        }
         let command = "INSERT INTO users (username, password) VALUES (?, ?)".to_string();
         if let Err(e) = self
             .db_conn

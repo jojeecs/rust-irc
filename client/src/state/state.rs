@@ -1,14 +1,14 @@
-use std::sync::Arc;
 use common::room::room::Room;
 use crate::pages::home_page::home_page::HomeField;
-use crate::pages::home_page::home_page::HomeField::MessageBox;
+use crate::pages::home_page::home_page::HomeField::MessageInput;
 use crate::pages::login_page::login_page::{LoginField, LoginStatus};
-use crate::pages::login_page::login_page::LoginStatus::{Connecting, Idle};
+use crate::pages::login_page::login_page::LoginStatus::{Connecting};
 
 pub struct LoginState {
     pub status: LoginStatus,
     pub focused_field: LoginField,
-    pub errors: Vec<String>
+    pub errors: Vec<String>,
+    pub new_user: bool,
 }
 
 pub struct HomeState {
@@ -24,7 +24,7 @@ impl HomeState {
     pub fn new(current_room: Room) -> Self {
         Self {
             current_room,
-            current_field: MessageBox
+            current_field: MessageInput
         }
     }
 }
@@ -70,7 +70,8 @@ impl Default for LoginState {
         Self {
             focused_field: LoginField::IP,
             errors: Vec::default(),
-            status: Connecting
+            status: Connecting,
+            new_user: false,
         }
     }
 }

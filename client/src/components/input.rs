@@ -1,3 +1,4 @@
+use ratatui::layout::Rect;
 use sha3::{Digest, Sha3_256};
 use tui_input::Input;
 
@@ -54,6 +55,22 @@ impl InputField {
         }
 
         self.input.to_string()
+    }
+    
+    pub fn correct_cursor_pos(&self, input_box: Rect, lines: u16) -> u16 {
+        let mut x = self.input.visual_cursor() as u16;
+
+        x += lines * 2;
+
+        while x >= input_box.width {
+            x -= input_box.width;
+        }
+
+        x += 1;
+
+        let cursor_x_pos = (input_box.x + x).clamp(input_box.x, (input_box.x + input_box.width) - 2);
+        cursor_x_pos
+
     }
 
     pub fn set_hidden(mut self, hidden: bool) -> Self {

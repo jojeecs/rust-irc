@@ -39,7 +39,10 @@ impl Client {
                     match event {
                         Key(key_event) => {
                             self.ui_manager.handle_input(key_event, &mut self.events);
-                        }
+                        },
+                        crossterm::event::Event::Resize(x, y) => {
+                            self.ui_manager.handle_resize(x, y);
+                        },
                         _ => {}
                     }
                 }
@@ -77,8 +80,10 @@ impl Client {
                         ClientPacket::AuthenticationRejected {..} => {
                             self.ui_manager.current_screen.add_notification(&LoginState::INCORRECT_INFORMATION);
                         },
-                        ClientPacket::AuthenticationAccepted => {
-                            self.ui_manager.switch_screen(Screen::Home(HomePage::new(self.ui_manager.app_tx.clone())))
+                        ClientPacket::AuthenticationAccepted { new_user } => {
+                            if !new_user {
+                                self.ui_manager.switch_screen(Screen::Home(HomePage::new(self.ui_manager.app_tx.clone())))
+                            }
                         }
                         ClientPacket::PublicMessage {contents} => {
                             self.ui_manager.handle_msg(contents);

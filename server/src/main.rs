@@ -1,5 +1,5 @@
 use common::ClientPacket::{Disconnect};
-use common::ServerEvent::{ChatMessageReceive, ConnectionAccept, ConnectionReject, LoginRequest, Error, Message, PrivateMessage, Shutdown, UserDisconnected, DirectMessageExternal};
+use common::ServerEvent::{ChatMessageReceive, AuthenticationAccept, AuthenticationReject, LoginRequest, Error, Message, PrivateMessage, Shutdown, UserDisconnected, DirectMessageExternal};
 use common::{ClientPacket, LoginInfo, Server, ServerEvent, Session, User};
 use rand::{Rng, rng};
 use std::collections::HashMap;
@@ -20,7 +20,7 @@ use regex::Regex;
 #[deny(unused_must_use)]
 #[tokio::main]
 async fn main() {
-    let ip_regex = match Regex::new("[0-9+].[0-9+].[0-9+].[0-9+]") {
+    let ip_regex = match Regex::new(r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$") {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Invalid regex: {}", e);
@@ -30,6 +30,13 @@ async fn main() {
     let ip: String = match input("Enter IP to listen on")
         .placeholder("127.0.0.1")
         .default_input("127.0.0.1")
+        .validate(move |input: &String| {
+            if ip_regex.clone().is_match(input.trim()) {
+                Ok(())
+            } else {
+                Err("Invalid IP")
+            }
+        })
         .interact()
     {
         Ok(s) => s,
@@ -114,12 +121,12 @@ async fn handle_new_connection(stream: EncryptedStream<TcpStream>, server_sender
 
                     if let Some(response) = receiver.recv().await {
                         match response {
-                            ConnectionAccept {user, ..} => {
+                            AuthenticationAccept {user, new_user, ..} => {
                                 println!("Login accepted");
                                 user_found = user;
-                                let _ = writer_stream.write_packet(&ClientPacket::AuthenticationAccepted).await;
+                                let _ = writer_stream.write_packet(&ClientPacket::AuthenticationAccepted { new_user }).await;
                                 break;
-                            } ConnectionReject {reason} => {
+                            } AuthenticationReject {..} => {
                                 let _ = writer_stream.write_packet(&ClientPacket::AuthenticationRejected).await;
                                 println!("Login rejected");
                                 continue;
@@ -250,95 +257,36 @@ async fn server_handler(mut server: Server) {
     loop {
         if let Some(event) = server.receiver.recv().await {
             match event {
-                LoginRequest {
-                    login_details,
-                    sender,
-                    ip_src,
-                } => {
-                    println!(
-                        "Connection request from: {}",
-                        login_details.username.trim_ascii()
-                    );
-                    match server
-                        .create_new_user(
-                            login_details.username.clone(),
-                            login_details.password.clone(),
-                        )
-                        .await
-                    {
-                        Some(user) => {
-                            let session = Session::new(
-                                Arc::clone(&sender),
-                                ip_src,
-                                rng().next_u64() as usize,
-                                user.user_id
-                            );
-                            let session_arc = Arc::new(session);
-                            let user_arc = Arc::new(user);
-                            server.user_id_map.insert(
-                                user_arc.user_id,
-                                (Arc::clone(&user_arc), Arc::clone(&session_arc)),
-                            );
-                            if let Err(e) = sender
-                                .send(ConnectionAccept {
-                                    user: Arc::clone(&user_arc),
-                                    session: Arc::clone(&session_arc),
-                                })
-                                .await
-                            {
-                                eprintln!("Internal server error sending user info: {}", e);
+                LoginRequest {login_details, sender, ip_src} => {
+                    let user;
+                    let mut user_id = 0;
+                    if server.user_exists(&login_details.username).await {
+                        user = match server.find_user_from_username(login_details.username).await {
+                            Some(u) => {
+                                user_id = u.user_id;
+                                Arc::new(u)
+                            },
+                            None => {
+                                eprintln!("Internal server error fetching user; this should not have happened");
                                 continue;
                             }
-                        }
-                        None => {
-                            if !server.verify_credentials(&login_details).await {
-                                if let Err(e) = sender
-                                    .send(ConnectionReject {
-                                        reason: "Incorrect password".to_string(),
-                                    })
-                                    .await
-                                {
-                                    eprintln!("Internal server error sending message: {}", e);
-                                }
-                                continue;
-                            }
-                            let user = match server
-                                .find_user_from_username(login_details.username)
-                                .await
-                            {
-                                Some(u) => u,
-                                None => {
-                                    eprintln!("Unexpected error from querying db.");
-                                    continue;
-                                }
-                            };
-                            let user_arc = Arc::new(user);
-                            let session = Session::new(
-                                Arc::clone(&sender),
-                                ip_src,
-                                rng().next_u64() as usize,
-                                user_arc.user_id
-                            );
-                            let session_arc = Arc::new(session);
-                            server.user_id_map.insert(
-                                user_arc.user_id,
-                                (Arc::clone(&user_arc), Arc::clone(&session_arc)),
-                            );
-                            if let Err(e) = sender
-                                .send(ConnectionAccept {
-                                    user: Arc::clone(&user_arc),
-                                    session: Arc::clone(&session_arc),
-                                })
-                                .await
-                            {
-                                eprintln!(
-                                    "Internal server error in sending connection accept packet: {}",
-                                    e
-                                );
+                        };
+                    } else {
+                        user = match server.create_new_user(login_details.username, login_details.password).await {
+                            Some(u) => Arc::new(u),
+                            None => {
                                 continue;
                             }
                         }
                     }
+
+                    let session = Session::new(Arc::clone(&sender), ip_src, rng().next_u64() as usize, user_id);
+
+                    let session_ref = Arc::new(session);
+
+                    server.user_id_map.insert(user_id, (Arc::clone(&user), Arc::clone(&session_ref)));
+
+                    let _ = sender.send(AuthenticationAccept {user: Arc::clone(&user), new_user: false }).await;
                 }
                 ChatMessageReceive { from, contents } => {
                     let uid_map = &server.user_id_map;
