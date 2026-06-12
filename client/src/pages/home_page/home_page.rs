@@ -17,7 +17,7 @@ use crate::ui_management::ui_manager::Page;
 use crate::components::message::{MessageBox as mbox, MessageBox};
 
 pub struct HomePage<'a> {
-    pub state: HomeState,
+    pub state: HomeState<'a>,
     pub ui_tx: UnboundedSender<Action>,
     pub message_input: InputField,
     pub message_box: mbox<'a>,

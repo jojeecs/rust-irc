@@ -1,3 +1,4 @@
+use ratatui::text::Line;
 use common::room::room::Room;
 use crate::pages::home_page::home_page::HomeField;
 use crate::pages::home_page::home_page::HomeField::MessageInput;
@@ -11,17 +12,17 @@ pub struct LoginState {
     pub new_user: bool,
 }
 
-pub struct HomeState {
+pub struct HomeState<'a> {
     pub current_room: Room,
     pub current_field: HomeField,
-    pub messages: Vec<String>,
+    pub messages: Vec<Line<'a>>,
 }
 
 pub struct ConnectionState {
     pub connected: bool,
 }
 
-impl HomeState {
+impl<'a> HomeState<'a> {
     pub fn new(current_room: Room) -> Self {
         Self {
             current_room,

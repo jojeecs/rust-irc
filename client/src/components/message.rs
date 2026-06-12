@@ -1,8 +1,6 @@
-use std::ops::Div;
-use ratatui::text::{Line, Span, Text};
+use ratatui::text::{Line};
 
 pub struct MessageBox<'a> {
-   pub messages: Vec<String>,
    pub width: usize,
    pub lines: usize,
    pub scroll_amount: usize,
@@ -12,7 +10,6 @@ pub struct MessageBox<'a> {
 impl<'a>  MessageBox<'a> {
    pub fn new(width: usize) -> Self {
       Self {
-         messages: Vec::new(),
          width,
          lines: 0,
          scroll_amount: 0,
@@ -26,11 +23,11 @@ impl<'a>  MessageBox<'a> {
       self.lines += msg.1;
    }
 
-   pub fn wrap_lines(&mut self, width: usize, regular_msgs: &Vec<String>) -> usize {
+   pub fn wrap_lines(&mut self, width: usize, regular_msgs: &Vec<Line>) -> usize {
       let mut fixed_lines: Vec<Line> = Vec::new();
       self.lines = 0;
       for message in regular_msgs {
-         let mut fixed = Self::wrap_line(width, message.clone());
+         let mut fixed = Self::wrap_line(width, message.to_string().clone());
          fixed_lines.append(&mut fixed.0);
          self.lines += fixed.1;
       }
@@ -40,7 +37,7 @@ impl<'a>  MessageBox<'a> {
    }
 
 
-   pub fn calculate_lines(&mut self, width: usize, regular_msgs: &Vec<String>) {
+   pub fn calculate_lines(&mut self, width: usize, regular_msgs: &Vec<Line>) {
       let new_line_count = self.wrap_lines(width, regular_msgs);
       if self.scroll_amount > new_line_count {
          self.scroll_amount -= new_line_count;

@@ -1,7 +1,7 @@
-use std::ops::Div;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::text::Line;
 use tokio::sync::{mpsc};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use crate::event::Event::ActionEvent;
@@ -103,7 +103,7 @@ impl<'a> Screen<'a> {
     pub fn handle_msg(&mut self, message: String) {
         match self {
             Screen::Home(home) => {
-                home.state.messages.push(message.clone());
+                home.state.messages.push(Line::from(message.clone()));
                 home.message_box.new_msg(&message);
             }
             _ => {}
