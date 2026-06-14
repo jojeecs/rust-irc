@@ -2,7 +2,7 @@ use std::ops::Div;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use tokio::sync::mpsc::UnboundedSender;
 use tui_input::backend::crossterm::EventHandler as evt;
 use common::room::room::Room;

@@ -103,6 +103,7 @@ impl<'a> Screen<'a> {
     pub fn handle_msg(&mut self, message: String) {
         match self {
             Screen::Home(home) => {
+                
                 home.state.messages.push(Line::from(message.clone()));
                 home.message_box.new_msg(&message);
             }
