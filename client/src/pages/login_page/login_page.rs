@@ -49,7 +49,7 @@ impl LoginPage {
 }
 
 impl Page for LoginPage {
-    fn draw(&self, frame: &mut Frame, area: Rect) {
+    fn draw(&mut self, frame: &mut Frame, area: Rect) {
         let width = area.width.max(3) - 3;
         let error_messages = Paragraph::new(self.state.errors.join("\n")).style(Style::new().fg(Red)).wrap(Wrap {trim: true }).centered();
         let mut error_box = frame.area().centered(Constraint::Length(50), Constraint::Length(3));

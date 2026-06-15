@@ -3,6 +3,8 @@ use tokio::sync::mpsc::{UnboundedSender};
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc::UnboundedReceiver;
 use common::ClientPacket;
+use common::ClientPacket::RoomChange;
+use common::room::room::Room;
 use crate::event::{Event, EventHandler};
 use crate::pages::home_page::home_page::HomePage;
 use crate::state::action::Action;
@@ -15,6 +17,7 @@ pub struct Client<'a> {
     socket_tx: UnboundedSender<ClientPacket>,
     ui_rx: UnboundedReceiver<Action>,
     events: EventHandler,
+    rooms: Vec<String>,
 }
 
 impl<'a> Client<'a> {
@@ -26,7 +29,8 @@ impl<'a> Client<'a> {
             connection_state: ConnectionState { connected: true },
             socket_tx,
             ui_rx,
-            events: EventHandler::new()
+            events: EventHandler::new(),
+            rooms: Vec::new(),
         }, ui_tx)
     }
 
@@ -81,13 +85,17 @@ impl<'a> Client<'a> {
                             self.ui_manager.current_screen.add_notification(&LoginState::INCORRECT_INFORMATION);
                         },
                         ClientPacket::AuthenticationAccepted { new_user } => {
-
-                            if !new_user {
-                                self.ui_manager.switch_screen(Screen::Home(HomePage::new(self.ui_manager.app_tx.clone())))
-                            }
+                            self.ui_manager.switch_screen(Screen::Home(HomePage::new(self.ui_manager.app_tx.clone())))
                         }
                         ClientPacket::PublicMessage {contents} => {
                             self.ui_manager.handle_msg(contents);
+                        },
+                        ClientPacket::RoomUpdate {rooms} => {
+                            for room in rooms {
+                                if !self.rooms.contains(&room) {
+                                    self.rooms.push(room);
+                                }
+                            }
                         }
                         _ => {}
                     }
@@ -97,6 +105,9 @@ impl<'a> Client<'a> {
                 },
                 Action::ServerConnectionFailed => {
                     self.ui_manager.current_screen.add_notification(LoginState::SERVER_DOWN);
+                },
+                Action::RoomChange {new_room_name, old_room_name} => {
+                    let _ = self.socket_tx.send(RoomChange {new_room_name, old_room_name});
                 }
                 _ => {}
             }

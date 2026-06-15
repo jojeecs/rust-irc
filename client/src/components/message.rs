@@ -1,5 +1,5 @@
-use ratatui::style::{Style, Stylize};
-use ratatui::text::{Line, Span, ToLine};
+use ratatui::style::{Style};
+use ratatui::text::{Line, Span};
 
 pub struct MessageBox<'a> {
    pub width: usize,
@@ -46,28 +46,54 @@ impl<'a>  MessageBox<'a> {
 
       let mut iter = msg.chars().into_iter();
 
-      let mut bold = false;
+      let mut styled = false;
+      let mut style = Style::default();
 
       let mut cur_span = Span::default();
 
+      let id_string = ['~'];
+
+      let mut current_char;
+
       loop {
          if let Some(ch) = iter.next() {
-            if ch.eq(&'*') {
+            current_char = ch;
+            if id_string.contains(&current_char) {
                spans.push(cur_span.clone());
                cur_span = Span::default();
-               bold = !bold;
-               continue;
+               styled = !styled;
+               match ch {
+                  '~' => {
+                     if let Some(char) = iter.next() {
+                        current_char = char;
+                        match current_char {
+                           'r' => {
+                              style = Style::default().red();
+                              continue;
+                           },
+                           'b' => {
+                              style = Style::default().red();
+                           }
+                           _ => {
+                              style = Style::default();
+                              continue;
+                           }
+                        };
+                     } else {
+                        continue;
+                     }
+                  }
+                  _ => {}
+               }
             }
 
-            if bold {
-               let mut content = cur_span.content.to_string();
-               content.push(ch);
-               cur_span = cur_span.content(content).red();
-            } else {
-               let mut content = cur_span.content.to_string();
-               content.push(ch);
-               cur_span = cur_span.content(content);
+            if !styled {
+               style = Style::default();
             }
+
+            let mut content = cur_span.content.to_string();
+            content.push(current_char);
+            cur_span = cur_span.content(content).style(style);
          } else {
             spans.push(cur_span.clone());
             break;
@@ -102,64 +128,41 @@ impl<'a>  MessageBox<'a> {
       (trimmed_msgs.join("\n"), lines_added)
    }
 
-   pub fn wrap_line(width: usize, mut line: &Line<'a>) -> (Vec<Line<'a>>, usize)  {
+   pub fn wrap_line(width: usize, line: &Line<'a>) -> (Vec<Line<'a>>, usize)  {
       let new_line = line.clone();
 
       let mut finished = Vec::new();
 
       let mut current_line = Line::default();
       let mut current_span_len;
-      let mut current_span_style = Style::default();
+      let mut current_span_style;
       let mut current_line_len = current_line.to_string().len();
 
-         for span in new_line {
-            current_span_len = span.content.len();
-            current_span_style = span.style;
-            if Self::fits_in_box(width, current_line_len, current_span_len) {
-               current_line.push_span(span.clone());
-               current_line_len = current_line.to_string().len();
-            } else {
-               for word in span.content.split("") {
-                  let new_word_len = word.len();
-                  if Self::fits_in_box(width, current_line_len, new_word_len) {
-                     current_line.push_span(Span::from(word.to_string()).style(current_span_style));
-                     current_line_len = current_line.to_string().len();
-                  } else {
-                     finished.push(current_line.clone());
-                     current_line = Line::default();
-                     current_line_len = 0;
-                  }
+      for span in new_line {
+         current_span_len = span.content.len();
+         current_span_style = span.style;
+         if Self::fits_in_box(width, current_line_len, current_span_len) {
+            current_line.push_span(span.clone());
+            current_line_len = current_line.to_string().len();
+         } else {
+            for word in span.content.split("") {
+               let new_word_len = word.len();
+               if Self::fits_in_box(width, current_line_len, new_word_len) {
+                  current_line.push_span(Span::from(word.to_string()).style(current_span_style));
+                  current_line_len = current_line.to_string().len();
+               } else {
+                  finished.push(current_line.clone());
+                  current_line = Line::default();
+                  current_line_len = 0;
                }
             }
          }
+      }
 
       finished.push(current_line);
       let lines_added = finished.len();
 
       (finished, lines_added)
-   }
-
-   fn append_span_to_line(span: Span<'a>, current_line: Line<'a>, width: usize) -> (Vec<Line<'a>>, usize)  {
-      let span_length = span.content.len();
-      let line_length = current_line.to_string().len();
-      let mut new_lines = Vec::new();
-      let span_style = span.style;
-      let mut line_content = current_line.to_string();
-      line_content.push_str(&span.content.to_string());
-      let mut new_lines_added = 1;
-
-      if !Self::fits_in_box(width, line_length, span_length) {
-         let (content, new_line_content) = line_content.split_at(width);
-         new_lines.push(Line::from(Span::from(content.to_string()).style(span_style)));
-         let new_span = Span::from(new_line_content.to_string());
-         let results = &mut Self::append_span_to_line(new_span, Line::default(), width);
-         new_lines.append(&mut results.0);
-         new_lines_added += results.1;
-      } else {
-         new_lines.push(Line::from(Span::from(line_content).style(span_style)));
-      }
-
-      (new_lines, new_lines_added)
    }
 
    pub fn fits_in_box(width: usize, current_size: usize, to_be_added: usize) -> bool {

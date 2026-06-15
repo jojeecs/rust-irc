@@ -3,10 +3,15 @@ use sha3::{Digest, Sha3_256};
 use tui_input::Input;
 
 
+/// A reusable TUI input field widget.
 pub struct InputField {
+    /// Label displayed before or above the input area.
     pub label: String,
+    /// The underlying `tui_input` state.
     pub input: Input,
+    /// Whether the field is currently focused for input.
     pub focused: bool,
+    /// If true, the input content is masked (e.g., for passwords).
     pub hidden: bool,
 }
 
@@ -22,7 +27,7 @@ impl Default for InputField {
 }
 
 impl InputField {
-
+    /// Creates a new `InputField` with the specified label.
     pub fn new(label: String) -> Self {
         let mut new = Self::default();
         new.label = label;

@@ -1,3 +1,8 @@
+//! # Chat Server
+//!
+//! The main server application for the chat system. It handles client connections,
+//! authentication, and message broadcasting.
+
 use common::ClientPacket::{Disconnect};
 use common::ServerEvent::{ChatMessageReceive, AuthenticationAccept, AuthenticationReject, LoginRequest, Error, Message, PrivateMessage, Shutdown, UserDisconnected, DirectMessageExternal};
 use common::{ClientPacket, LoginInfo, Server, ServerEvent, Session, User};
@@ -13,11 +18,13 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{Semaphore, mpsc};
 use regex::Regex;
+use common::room::room::Room;
 
 #[deny(clippy::unwrap_used)]
 #[deny(clippy::expect_used)]
 #[deny(clippy::panic)]
 #[deny(unused_must_use)]
+/// Starts the server and begins listening for connections.
 #[tokio::main]
 async fn main() {
     let ip_regex = match Regex::new(r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$") {
@@ -58,13 +65,16 @@ async fn main() {
 
     let sender_reference = Arc::new(server_sender);
 
-    let server_state = match handle_server_start(server_recv).await {
+    let mut server_state = match handle_server_start(server_recv).await {
         Some(sv) => sv,
         None => {
             eprintln!("Internal server error initializing server.");
             return;
         }
     };
+
+    server_state.room_store.add_room_new("Global".to_string());
+    server_state.room_store.add_room_new("Private".to_string());
 
     let sender_ref = Arc::clone(&sender_reference);
 
@@ -100,6 +110,10 @@ async fn main() {
     }
 }
 
+/// Handles a newly established client connection.
+/// 
+/// This function performs the initial authentication handshake and then
+/// spawns reader and writer tasks for the connection.
 async fn handle_new_connection(stream: EncryptedStream<TcpStream>, server_sender: Arc<Sender<ServerEvent>>, ip_src: IpAddr) {
     let (sender, mut receiver) = mpsc::channel::<ServerEvent>(100);
     let sender_ref = Arc::new(sender);
@@ -153,6 +167,7 @@ async fn handle_new_connection(stream: EncryptedStream<TcpStream>, server_sender
     }).await.unwrap();
 }
 
+/// Task responsible for reading packets from a client and converting them to server events.
 async fn reader_socket(
     mut stream: EncryptedReader<ReadHalf<TcpStream>>,
     server_sender: Arc<Sender<ServerEvent>>,
@@ -180,6 +195,7 @@ async fn reader_socket(
     }
 }
 
+/// Converts a `ClientPacket` into a `ServerEvent`.
 fn packet_to_event(packet: ClientPacket, user: &User) -> ServerEvent {
     match packet {
         ClientPacket::PublicMessage { contents } => ChatMessageReceive {
@@ -191,12 +207,16 @@ fn packet_to_event(packet: ClientPacket, user: &User) -> ServerEvent {
             from: user.user_id,
             contents,
         },
+        ClientPacket::RoomChange {new_room_name, old_room_name} => {
+            ServerEvent::RoomChange {new_room_name, old_room_name, user_id: user.user_id}
+        },
         _ => Error {
             message: "Internal server error".to_string(),
         },
     }
 }
 
+/// Task responsible for writing packets back to a client.
 async fn writer_socket(mut receiver: Receiver<ServerEvent>, mut stream: EncryptedWriter<WriteHalf<TcpStream>>) {
     loop {
         if let Some(event) = receiver.recv().await {
@@ -224,6 +244,7 @@ async fn handle_server_start(server_recv: Receiver<ServerEvent>) -> Option<Serve
     Some(server)
 }
 
+/// Handles server-side console input for administrative commands.
 async fn server_input_handler(server_sender: Arc<Sender<ServerEvent>>) {
     loop {
         let mut cmd = String::new();
@@ -249,10 +270,12 @@ async fn server_input_handler(server_sender: Arc<Sender<ServerEvent>>) {
     }
 }
 
+/// The main event loop of the server, processing all `ServerEvent`s.
 async fn server_handler(mut server: Server) {
     let server_identity = Arc::new(User {
         username: "Server".to_string(),
         user_id: 0,
+        current_room_name: "Global".to_string(),
     });
     loop {
         if let Some(event) = server.receiver.recv().await {
@@ -275,9 +298,11 @@ async fn server_handler(mut server: Server) {
                         user = match server.create_new_user(login_details.username, login_details.password).await {
                             Some(u) => Arc::new(u),
                             None => {
+                                println!("Error creating new user");
                                 continue;
                             }
-                        }
+                        };
+                        user_id = user.user_id;
                     }
 
                     let session = Session::new(Arc::clone(&sender), ip_src, rng().next_u64() as usize, user_id);
@@ -285,6 +310,9 @@ async fn server_handler(mut server: Server) {
                     let session_ref = Arc::new(session);
 
                     server.user_id_map.insert(user_id, (Arc::clone(&user), Arc::clone(&session_ref)));
+                    if let Some(room) = server.room_store.get_room_from_name(&"Global".to_string()) {
+                        room.add_session(Arc::clone(&session_ref));
+                    }
 
                     let _ = sender.send(AuthenticationAccept {user: Arc::clone(&user), new_user: false }).await;
                 }
@@ -296,22 +324,46 @@ async fn server_handler(mut server: Server) {
                             continue;
                         }
                     };
+
+                    let room = match server.room_store.get_room_from_name(&user.current_room_name) {
+                        Some(r) => r,
+                        None => {
+                            continue;
+                        }
+                    };
+
                     handle_broadcast(
                         contents,
                         user,
-                        &server.user_id_map.values().collect::<Vec<_>>(),
+                        room,
                     )
                     .await;
                 }
                 UserDisconnected { user } => {
                     println!("{} has disconnected", user.username);
+
+                    let session = match &server.get_session_from_uid(user.user_id).await {
+                        Some(s) => s,
+                        None => {
+                            continue;
+                        }
+                    }.clone();
+
+                    let room = match server.room_store.get_room_from_name(&user.current_room_name) {
+                        Some(r) => r,
+                        None => {
+                            continue;
+                        }
+                    };
+
                     handle_client_disconnect(
                         &user,
+                        session,
                         Arc::clone(&server_identity),
-                        &mut server.user_id_map,
+                        room,
                     )
                     .await;
-                }
+                },
                 PrivateMessage { to, from, contents } => {
                     let uid_map = &server.user_id_map;
                     let user_from = match server.user_id_map.get(&from) {
@@ -323,6 +375,40 @@ async fn server_handler(mut server: Server) {
                     if let Some(user_to) = server.find_user_from_username(to).await {
                         handle_pm(&user_to, &user_from.0, contents, uid_map).await;
                     }
+                },
+                ServerEvent::RoomChange {new_room_name, old_room_name, user_id} => {
+                    let session = match server.user_id_map.get(&user_id) {
+                        Some(u) => {
+                            u.clone().1
+                        },
+                        None => {
+                            eprintln!("Error looking up user info to change rooms.");
+                            continue;
+                        }
+                    }.clone();
+
+                    let old_room = match server.room_store.get_room_from_name(&old_room_name) {
+                        Some(r) => r,
+                        None => {
+                            eprintln!("Error fetching old room {old_room_name}");
+                            continue;
+                        }
+                    };
+
+                    if let None = old_room.remove_session(Arc::clone(&session)) {
+                        println!("Error removing session from old room {old_room_name}");
+                        continue;
+                    }
+
+                    let new_room = match server.room_store.get_room_from_name(&new_room_name) {
+                        Some(r) => r,
+                        None => {
+                            eprintln!("Error fetching new room {new_room_name}");
+                            continue;
+                        }
+                    };
+
+                    new_room.add_session(session);
                 }
                 Shutdown => {
                     std::process::exit(0);
@@ -333,6 +419,7 @@ async fn server_handler(mut server: Server) {
     }
 }
 
+/// Sends a private message from one user to another.
 async fn handle_pm(
     to: &User,
     from: &User,
@@ -359,24 +446,26 @@ async fn handle_pm(
 }
 async fn handle_client_disconnect(
     user: &User,
+    session: Arc<Session>,
     server_identity: Arc<User>,
-    clients: &mut HashMap<usize, (Arc<User>, Arc<Session>)>,
+    room: &mut Room,
 ) {
-    if let None = clients.remove(&user.user_id) {
+    if let None = room.remove_session(session) {
         eprintln!("Could not remove client from client list.");
     }
     handle_broadcast(
         format!("{} has disconnected.", user.username),
         &server_identity,
-        &clients.values().collect::<Vec<_>>(),
+        room,
     )
     .await;
 }
 
+/// Broadcasts a message to all connected clients.
 async fn handle_broadcast(
     contents: String,
     originator: &User,
-    clients: &Vec<&(Arc<User>, Arc<Session>)>,
+    room: &mut Room,
 ) {
     if contents.is_empty() {
         return;
@@ -390,15 +479,5 @@ async fn handle_broadcast(
         formatted = format!("SERVER: {}", contents.trim_ascii());
     }
 
-    for (_, session) in clients {
-        if let Err(e) = session
-            .sender
-            .send(Message {
-                contents: formatted.clone(),
-            })
-            .await
-        {
-            eprintln!("Internal server error sending broadcast to client: {}", e);
-        }
-    }
+    room.new_message(formatted).await;
 }

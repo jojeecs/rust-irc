@@ -7,5 +7,6 @@ pub enum Action {
     LoginAttempt { username: String, password: String },
     SendMessage { contents: String },
     SocketMessage { packet: ClientPacket },
+    RoomChange { new_room_name: String, old_room_name: String  },
     Exit,
 }

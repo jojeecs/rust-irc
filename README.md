@@ -1,32 +1,45 @@
-# Rust IRC/Chatserver
+# Rust IRC
 
-A high-performance, asynchronous chat application built with Rust, featuring secure authentication and persistent storage.
+A high-performance, asynchronous chat application built with Rust, featuring secure encrypted communication, persistent storage, and a modern Terminal User Interface (TUI).
 
 ## Features
 
-- **Asynchronous Architecture**: Built on top of `tokio` for efficient handling of concurrent connections.
-- **Persistent SQL Storage**: Utilizes `turso` for reliable user data management.
-- **Secure Authentication**: Implements password-based login with SHA3-256 hashing.
-- **Interactive CLI**: Enhanced user experience using the `cliclack` library for terminal-based interactions.
-- **Messaging System**:
-    - **Public Broadcasts**: Send messages to everyone connected to the server.
-    - **Private Messaging**: Secure one-on-one communication between users.
-- **Protocol**: Custom packet handling with JSON serialization/deserialization for reliable data transfer.
-- **Server Administration**: Direct admin input for server-side commands and management.
-## Getting Started
+- **Asynchronous Architecture**: Built with `tokio` for efficient concurrent connection handling.
+- **Secure Communication**: End-to-end encrypted streams using the `clavis` library.
+- **Persistent Storage**: User management powered by Turso (SQLite) for reliable data persistence.
+- **Modern TUI**: Interactive terminal interface built with `ratatui` and `tui-input`.
+- **Flexible Messaging**:
+    - **Global Broadcasts**: Chat with everyone connected to the server.
+    - **Private Messaging**: Secure, direct one-on-one messages.
+- **Encrypted Authentication**: SHA3-256 hashed password verification.
+
+## Project Structure
+
+This workspace consists of three main crates:
+
+- **`client/`**: The TUI-based chat client.
+- **`server/`**: The asynchronous chat server.
+- **`common/`**: Shared data structures, protocol definitions, and domain logic.
+
 
 ### Prerequisites
-
-- Rust (latest stable version)
-- SQLite (for local development)
+- Rust (latest stable)
+- SQLite
 
 ### Usage
 
-Option 1: Download the latest stable release from the [releases](https://github.com/jojeecs/chatserver-rs/releases) page, run `server` and then `client` for each connection.
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/jojeecs/chatserver-rs.git
+   cd chatserver-rs
+   ```
 
-Option 2: 
-If you're interested in modifying the code, you can clone the repo:
+2. **Run the Server**:
+   ```bash
+   cargo run --bin server
+   ```
 
-`git clone github.com/jojeecs/chatserver-rs.git`
-
-Client and Server binary's and source code are stored in their respective folders, and any utility functions are in `common`
+3. **Run the Client**:
+   ```bash
+   cargo run --bin client
+   ```

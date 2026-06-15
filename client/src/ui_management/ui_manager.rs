@@ -21,7 +21,7 @@ pub enum Screen<'a> {
 }
 
 pub trait Page {
-    fn draw(&self, frame: &mut Frame, area: Rect);
+    fn draw(&mut self, frame: &mut Frame, area: Rect);
     fn handle_event(&mut self, event: KeyEvent, event_handler: &mut EventHandler);
 }
 
@@ -42,15 +42,7 @@ impl<'a> UiManager<'a> {
     }
 
     pub fn draw(&mut self, frame: &mut Frame) {
-        match &self.current_screen {
-            Screen::Login(login) => {
-                login.draw(frame, frame.area());
-            },
-            Screen::Home(home) => {
-                home.draw(frame, frame.area());
-            }
-            _ => {}
-        }
+        self.current_screen.draw_frame(frame);
     }
 
     pub fn handle_resize(&mut self, x: u16, y: u16) {
@@ -87,6 +79,22 @@ impl<'a> Screen<'a> {
                     _ => {}
                 }
             }
+        }
+    }
+
+    pub fn draw_frame(&mut self, frame: &mut Frame) {
+        match self {
+            Screen::Login(login) => {
+                login.draw(frame, frame.area());
+            },
+            Screen::Home(home) => {
+                if home.rooms.is_empty() {
+                    home.rooms.push("Global".to_string());
+                    home.rooms.push("Private".to_string());
+                }
+                home.draw(frame, frame.area());
+            },
+            &mut Screen::Connect | &mut Screen::Settings => todo!()
         }
     }
 

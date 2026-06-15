@@ -1,3 +1,7 @@
+//! # Common Library
+//!
+//! Shared data structures and protocol definitions for the chat server and client.
+
 pub mod room;
 
 use serde::{Deserialize, Serialize};
@@ -12,101 +16,149 @@ use crate::room::room::{Room, RoomStore};
 const UID_COLUMN: usize = 0;
 const USERNAME_COLUMN: usize = 1;
 const PASSWORD_COLUMN: usize = 2;
+const ROOM_COLUMN: usize = 3;
 
-/// `ClientSession` holds information regarding a connection between client and server.
+/// `Session` holds information regarding a connection between client and server.
 ///
+/// It contains a sender to communicate with the user and basic session metadata.
 #[derive(Debug, Clone)]
 pub struct Session {
+    /// Channel to send events to this specific user.
     pub sender: Arc<Sender<ServerEvent>>,
+    /// Metadata about the connection.
     pub session_info: SessionInfo,
 }
 
+/// Metadata related to an active user session.
 #[derive(Clone, Debug)]
 pub struct SessionInfo {
+    /// Source IP address of the connected client.
     pub src_ip: IpAddr,
+    /// Unique session identifier.
     pub session_id: usize,
+    /// Database UID of the connected user.
     pub uid_connected: usize,
 }
 
-
+/// Represents a registered user in the system.
 #[derive(Debug)]
 pub struct User {
+    /// The user's unique username.
     pub username: String,
+    /// The user's unique database ID.
     pub user_id: usize,
+    pub current_room_name: String,
 }
 
+/// Information required for a user to log in.
 #[derive(Serialize, Deserialize, Debug, Eq, Clone)]
 pub struct LoginInfo {
     pub username: String,
     pub password: String,
 }
 
+/// The main server state container.
 pub struct Server {
+    /// Maps user IDs to their profile and active session.
     pub user_id_map: HashMap<usize, (Arc<User>, Arc<Session>)>,
+    /// Maps usernames to their user IDs for quick lookup.
     pub username_map: HashMap<String, usize>,
+    /// Storage for all active chat rooms.
     pub room_store: RoomStore,
+    /// Global receiver for server-wide events.
     pub receiver: Receiver<ServerEvent>,
+    /// Connection to the underlying user database.
     pub db_conn: Connection,
 }
 
 
 protocol! {
+    /// Packets sent from the client to the server.
     #[derive(Debug)]
     pub enum ClientPacket {
+        /// Request to connect to the server at a given IP.
         ConnectRequest { ip: String },
+        /// A public message sent to all users in the current room.
         PublicMessage { contents: String },
+        /// A private message sent to a specific user.
         PrivateMessage { to: String, contents: String },
+        /// Authentication request with username and password.
         LoginRequestPacket { username: String, password: String },
+        /// Sent by the server if a connection attempt is rejected.
         ConnectionRejected { reason: String },
+        /// Sent by the server if a connection attempt is accepted.
         ConnectionAccepted,
+        /// Sent by the server if authentication fails.
         AuthenticationRejected,
+        /// Sent by the server if authentication succeeds.
         AuthenticationAccepted { new_user: bool },
+        /// General error packet.
         Error { reason: String },
+        RoomUpdate { rooms: Vec<String> },
+        RoomChange { new_room_name: String, old_room_name: String },
+        /// Notification of client disconnection.
         Disconnect,
     }
 }
 
+/// Internal events processed by the server's main loop.
 #[derive(Debug)]
 pub enum ServerEvent {
+    /// Request to log in a user.
     LoginRequest {
         login_details: LoginInfo,
         sender: Arc<Sender<ServerEvent>>,
         ip_src: IpAddr,
     },
+    /// Signal that authentication was successful.
     AuthenticationAccept {
         user: Arc<User>,
         new_user: bool,
     },
+    /// Signal that authentication failed.
     AuthenticationReject {
         reason: String,
     },
+    /// Notification of a received chat message.
     ChatMessageReceive {
         from: usize,
         contents: String,
     },
+    /// A generic message.
     Message {
         contents: String,
     },
+    /// A private message from an external user.
     DirectMessageExternal {
         to: String,
         from: String,
         contents: String,
     },
+    /// Internal representation of a private message.
     PrivateMessage {
         to: String,
         from: usize,
         contents: String,
     },
+    /// Signal that a user has disconnected.
     UserDisconnected {
         user: Arc<User>,
     },
+    /// A server-side error.
     Error {
         message: String,
     },
+    RoomChange {
+        new_room_name: String,
+        old_room_name: String,
+        user_id: usize,
+    },
+    /// Signal to shut down the server.
     Shutdown,
 }
 
 impl Server {
+    /// Creates a new Server instance and initializes the database.
     pub async fn new(receiver: Receiver<ServerEvent>) -> Server {
         let db_conn = match Self::init_db().await {
             Some(con) => con,
@@ -124,7 +176,7 @@ impl Server {
     }
 
     pub async fn find_user_from_username(&self, username: String) -> Option<User> {
-        let query = format!("SELECT * FROM users WHERE username = '{}'", username);
+        let query = format!("SELECT DISTINCT * FROM users WHERE LOWER(username) LIKE LOWER('{}')", username);
         let rows = match self.run_query(query).await {
             Some(r) => r,
             None => {
@@ -148,10 +200,42 @@ impl Server {
                     return None;
                 }
             };
+            let room_name = match row.get_value(ROOM_COLUMN) {
+                Ok(room) => match room.as_text() {
+                    Some(p) => p.clone(),
+                    None => {
+                        println!("Error getting room column value");
+                        return None;
+                    }
+                },
+                Err(e) => {
+                    eprintln!(
+                        "Error getting UID information from row on user {}: {}",
+                        username, e
+                    );
+                    return None;
+                }
+            };
+            let username = match row.get_value(USERNAME_COLUMN) {
+                Ok(user) => match user.as_text() {
+                    Some(u) => u.clone(),
+                    None => {
+                        println!("Error");
+                        return None;
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    return None;
+                }
+            };
             return Some(User {
                 username,
                 user_id: user_id as usize,
+                current_room_name: room_name,
             });
+        } else {
+            println!("Unknown error occured ")
         }
 
         None
@@ -163,45 +247,16 @@ impl Server {
 
         Some(session)
     }
-
-    pub async fn get_user_from_uid(&self, uid: usize) -> Option<User> {
-        let query = format!("SELECT * FROM user WHERE uid = {}", uid);
-        let mut result = match self.db_conn.query(query, ()).await {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("Error querying DB: {}", e);
-                return None;
-            }
-        };
-
-        match result.next().await {
-            Ok(row_res) => match row_res {
-                Some(row) => {
-                    let username = match row.get_value(USERNAME_COLUMN) {
-                        Ok(u) => u,
-                        Err(e) => {
-                            eprintln!("Error parsing DB row: {}", e);
-                            return None;
-                        }
-                    };
-                    return match username.as_text() {
-                        Some(u) => Some(User::new(u.to_string(), uid)),
-                        None => None,
-                    };
-                }
-                None => {}
-            },
-            Err(e) => {
-                eprintln!("Error querying table: {}", e);
-                return None;
-            }
-        }
-
-        None
+    
+    pub async fn get_session_from_uid(&self, uid: usize) -> Option<Arc<Session>> {
+        let found = self.user_id_map.get(&uid)?;
+        let session = found.clone().1;
+        
+        Some(session)
     }
 
     pub async fn user_exists(&self, username: &String) -> bool {
-        let command = format!("SELECT DISTINCT * FROM users WHERE LOWER(username) LIKE LOWER('%{}%')", username);
+        let command = format!("SELECT DISTINCT * FROM users WHERE LOWER(username) LIKE LOWER('{}')", username);
         let result = self.run_query(command).await.unwrap_or_else(|| Vec::new());
 
         if let Some(_) = result.iter().next() {
@@ -262,10 +317,10 @@ impl Server {
     }
 
     pub async fn create_new_user(&self, username: String, password: String) -> Option<User> {
-        let command = "INSERT INTO users (username, password) VALUES (?, ?)".to_string();
+        let command = "INSERT INTO users (username, password, room) VALUES (?, ?, ?)".to_string();
         if let Err(e) = self
             .db_conn
-            .execute(command, (username.trim_ascii(), password.trim_ascii()))
+            .execute(command, (username.trim_ascii(), password.trim_ascii(), "Global".to_string()))
             .await
         {
             eprintln!("Error inserting new user into db: {}", e);
@@ -291,7 +346,7 @@ impl Server {
             }
         };
 
-        if let Err(e) = conn.execute("CREATE TABLE IF NOT EXISTS users (ID INTEGER PRIMARY KEY AUTOINCREMENT, username VARCHAR(50) UNIQUE, password VARCHAR(100))", ())
+        if let Err(e) = conn.execute("CREATE TABLE IF NOT EXISTS users (ID INTEGER PRIMARY KEY AUTOINCREMENT, username VARCHAR(50) UNIQUE, password VARCHAR(100), room VARCHAR(100))", ())
             .await {
             eprintln!("Error initializing db: {}", e);
             return None;
@@ -323,7 +378,7 @@ impl Session {
 
 impl User {
     pub fn new(username: String, user_id: usize) -> User {
-        User { username, user_id }
+        User { username, user_id, current_room_name: "Global".to_string() }
     }
 }
 
