@@ -187,6 +187,7 @@ async fn reader_socket(
             }
         };
 
+
         let event = packet_to_event(packet, &user);
 
         if let Err(e) = server_sender.send(event).await {
@@ -272,10 +273,9 @@ async fn server_input_handler(server_sender: Arc<Sender<ServerEvent>>) {
 
 /// The main event loop of the server, processing all `ServerEvent`s.
 async fn server_handler(mut server: Server) {
-    let server_identity = Arc::new(User {
+    let mut server_identity = Arc::new(User {
         username: "Server".to_string(),
         user_id: 0,
-        current_room_name: "Global".to_string(),
     });
     loop {
         if let Some(event) = server.receiver.recv().await {
@@ -312,6 +312,7 @@ async fn server_handler(mut server: Server) {
                     server.user_id_map.insert(user_id, (Arc::clone(&user), Arc::clone(&session_ref)));
                     if let Some(room) = server.room_store.get_room_from_name(&"Global".to_string()) {
                         room.add_session(Arc::clone(&session_ref));
+                        let _ = server.user_room_map.insert(user_id, "Global".to_string());
                     }
 
                     let _ = sender.send(AuthenticationAccept {user: Arc::clone(&user), new_user: false }).await;
@@ -325,7 +326,14 @@ async fn server_handler(mut server: Server) {
                         }
                     };
 
-                    let room = match server.room_store.get_room_from_name(&user.current_room_name) {
+                    let room_name = match server.user_room_map.get(&user.user_id) {
+                        Some(r) => r,
+                        None => {
+                            continue;
+                        }
+                    };
+
+                    let room = match server.room_store.get_room_from_name(room_name) {
                         Some(r) => r,
                         None => {
                             continue;
@@ -342,6 +350,13 @@ async fn server_handler(mut server: Server) {
                 UserDisconnected { user } => {
                     println!("{} has disconnected", user.username);
 
+                    let room_name = match server.user_room_map.get(&user.user_id) {
+                        Some(r) => r,
+                        None => {
+                            continue;
+                        }
+                    };
+
                     let session = match &server.get_session_from_uid(user.user_id).await {
                         Some(s) => s,
                         None => {
@@ -349,7 +364,7 @@ async fn server_handler(mut server: Server) {
                         }
                     }.clone();
 
-                    let room = match server.room_store.get_room_from_name(&user.current_room_name) {
+                    let room = match server.room_store.get_room_from_name(room_name) {
                         Some(r) => r,
                         None => {
                             continue;
@@ -365,21 +380,33 @@ async fn server_handler(mut server: Server) {
                     .await;
                 },
                 PrivateMessage { to, from, contents } => {
-                    let uid_map = &server.user_id_map;
                     let user_from = match server.user_id_map.get(&from) {
                         Some(u) => u,
                         None => {
                             continue;
                         }
+                    }.clone().0;
+
+                    let to_session = match server.get_session_from_username(to.clone()).await {
+                        Some(s) => s,
+                        None => {
+                            return;
+                        }
                     };
-                    if let Some(user_to) = server.find_user_from_username(to).await {
-                        handle_pm(&user_to, &user_from.0, contents, uid_map).await;
-                    }
+
+                    let from_session = match server.user_id_map.get(&from) {
+                        Some((_, s)) => s,
+                        None => {
+                            return;
+                        }
+                    }.clone();
+
+                    handle_pm(to, &user_from, contents, to_session, from_session).await;
                 },
                 ServerEvent::RoomChange {new_room_name, old_room_name, user_id} => {
                     let session = match server.user_id_map.get(&user_id) {
                         Some(u) => {
-                            u.clone().1
+                            u
                         },
                         None => {
                             eprintln!("Error looking up user info to change rooms.");
@@ -395,7 +422,7 @@ async fn server_handler(mut server: Server) {
                         }
                     };
 
-                    if let None = old_room.remove_session(Arc::clone(&session)) {
+                    if let None = old_room.remove_session(Arc::clone(&session.1)) {
                         println!("Error removing session from old room {old_room_name}");
                         continue;
                     }
@@ -408,7 +435,11 @@ async fn server_handler(mut server: Server) {
                         }
                     };
 
-                    new_room.add_session(session);
+
+                    let _ = server.user_room_map.insert(user_id, new_room_name);
+
+
+                    new_room.add_session(session.1);
                 }
                 Shutdown => {
                     std::process::exit(0);
@@ -421,28 +452,17 @@ async fn server_handler(mut server: Server) {
 
 /// Sends a private message from one user to another.
 async fn handle_pm(
-    to: &User,
+    to: String,
     from: &User,
     message: String,
-    current_users: &HashMap<usize, (Arc<User>, Arc<Session>)>,
+    to_session: Arc<Session>,
+    from_session: Arc<Session>,
 ) {
     let from_formatted = format!("From {}: {}", from.username, message);
-    let to_formatted = format!("To {}: {}", to.username, message);
-    let from_session = match current_users.get(&from.user_id) {
-        Some((_, s)) => s,
-        None => {
-            return;
-        }
-    };
-    let to_session = match current_users.get(&to.user_id) {
-        Some((_, s)) => s,
-        None => {
-            let _ = from_session.sender.send(Error {message: format!("User {} not found or not online.", to.username)}).await;
-            return;
-        }
-    };
-    let _ = to_session.sender.send(DirectMessageExternal {to: to.username.clone(), from: from.username.clone(), contents: from_formatted}).await;
-    let _ = from_session.sender.send(DirectMessageExternal {to: to.username.clone(), from: from.username.clone(), contents: to_formatted}).await;
+    let to_formatted = format!("To {}: {}", to, message);
+
+    let _ = to_session.sender.send(DirectMessageExternal {to: to.clone(), from: from.username.clone(), contents: from_formatted}).await;
+    let _ = from_session.sender.send(DirectMessageExternal {to, from: from.username.clone(), contents: to_formatted}).await;
 }
 async fn handle_client_disconnect(
     user: &User,

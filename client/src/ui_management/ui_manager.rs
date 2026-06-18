@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::text::Line;
 use tokio::sync::{mpsc};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -28,13 +28,18 @@ pub trait Page {
 pub struct UiManager<'a> {
     pub app_tx: UnboundedSender<Action>,
     pub current_screen: Screen<'a>,
+    pub cursor_position: Position,
 }
 
 impl<'a> UiManager<'a> {
     pub fn new() -> (Self, UnboundedReceiver<Action>, UnboundedSender<Action>) {
         let (app_tx, app_rx) = mpsc::unbounded_channel::<Action>();
 
-        (Self { app_tx: app_tx.clone(), current_screen: Screen::Login(LoginPage::new()) }, app_rx, app_tx)
+        (Self {
+            app_tx: app_tx.clone(),
+            current_screen: Screen::Login(LoginPage::new()),
+            cursor_position: Position::ORIGIN
+        }, app_rx, app_tx)
     }
 
     pub fn handle_input(&mut self, event: KeyEvent, event_handler: &mut EventHandler) {
@@ -111,7 +116,6 @@ impl<'a> Screen<'a> {
     pub fn handle_msg(&mut self, message: String) {
         match self {
             Screen::Home(home) => {
-                
                 home.state.messages.push(Line::from(message.clone()));
                 home.message_box.new_msg(&message);
             }

@@ -1,11 +1,10 @@
 use std::ops::Div;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Rect};
+use ratatui::layout::{Constraint, Position, Rect};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use tokio::sync::mpsc::UnboundedSender;
 use tui_input::backend::crossterm::EventHandler as evt;
-use common::room::room::Room;
 use crate::components::input::InputField;
 use crate::event::Event::ActionEvent;
 use crate::event::EventHandler;
@@ -14,7 +13,7 @@ use crate::state::action::Action;
 use crate::state::action::Action::{RoomChange, SendMessage};
 use crate::state::state::{HomeState};
 use crate::ui_management::ui_manager::Page;
-use crate::components::message::{MessageBox as mbox, MessageBox};
+use crate::components::message_box::{MessageBox as mbox, MessageBox};
 
 pub struct HomePage<'a> {
     pub state: HomeState<'a>,
@@ -22,6 +21,7 @@ pub struct HomePage<'a> {
     pub message_input: InputField,
     pub message_box: mbox<'a>,
     pub rooms: Vec<String>,
+    pub cursor_position: Position,
 }
 
 pub enum HomeField {
@@ -38,6 +38,7 @@ impl<'a> HomePage<'a> {
             message_input: InputField::default(),
             message_box: mbox::new(crossterm::terminal::size().unwrap().0 as usize / 3),
             rooms: Vec::new(),
+            cursor_position: Position::ORIGIN,
         }
     }
 }
@@ -45,8 +46,11 @@ impl<'a> Page for HomePage<'a> {
     fn draw(&mut self, frame: &mut Frame, area: Rect) {
         let center_area = area.centered(Constraint::Length(area.width.div(3)), Constraint::Percentage(100));
         let rooms_area = Rect::new(area.x, area.y, area.width.div(3), area.height);
+        let friends_area = Rect::new(center_area.x, area.y, area.width.div(3), area.height);
         self.render_center(frame, center_area);
         self.render_rooms(frame, rooms_area);
+        self.render_friends(frame, friends_area);
+        frame.set_cursor_position(self.cursor_position);
     }
 
     fn handle_event(&mut self, event: KeyEvent, event_handler: &mut EventHandler) {
@@ -72,6 +76,7 @@ impl<'a> Page for HomePage<'a> {
 
                         let _ = self.ui_tx.send(RoomChange {new_room_name: new_room_name.clone(), old_room_name: self.state.current_room_name.clone()});
                         self.state.current_room_name = new_room_name;
+                        self.message_box.text.clear();
                     }
                     Settings => {}
                 }
@@ -98,6 +103,7 @@ impl<'a> Page for HomePage<'a> {
                     }
                     RoomSelection => {
                         if self.state.room_index + 1 < self.rooms.len() {
+                            self.cursor_position.y -= 1;
                             self.state.room_index += 1;
                         }
                     }
@@ -113,6 +119,7 @@ impl<'a> Page for HomePage<'a> {
                     }
                     RoomSelection => {
                         if self.state.room_index > 0 {
+                            self.cursor_position.x += 1;
                             self.state.room_index -= 1;
                         }
                     }
@@ -131,8 +138,10 @@ impl<'a> HomePage<'a> {
     fn render_center(&mut self, frame: &mut Frame, area: Rect) {
         let lines = self.message_box.lines;
 
-        let messages_box = area.centered(Constraint::Percentage(100), Constraint::Percentage(80));
-        let mut input_box = area.centered(Constraint::Percentage(100), Constraint::Length(3));
+        let mut messages_box = area.centered_horizontally(Constraint::Percentage(100));
+        let mut input_box = area.centered(Constraint::Percentage(100), Constraint::Percentage(5));
+
+        messages_box.height -= input_box.height;
 
         input_box.y = messages_box.bottom();
 
@@ -166,7 +175,7 @@ impl<'a> HomePage<'a> {
         if let MessageInput = self.state.current_field {
             let cursor_x_pos = self.message_input.correct_cursor_pos(input_box, new_lines_needed);
 
-            frame.set_cursor_position((cursor_x_pos, input_box.y + 1 + new_lines_needed));
+            self.cursor_position = Position::new(cursor_x_pos, input_box.y + 1 + new_lines_needed);
         }
     }
 
@@ -179,7 +188,13 @@ impl<'a> HomePage<'a> {
 
         if let RoomSelection = self.state.current_field {
             let cursor_x_pos = rooms_box.x + 1;
-            frame.set_cursor_position((cursor_x_pos, rooms_box.y + self.state.room_index as u16 + 1));
+
+            self.cursor_position.x = cursor_x_pos;
+            self.cursor_position.y = rooms_box.y + self.state.room_index as u16 + 1;
         }
+    }
+
+    fn render_friends(&mut self, frame: &mut Frame, area: Rect) {
+
     }
 }

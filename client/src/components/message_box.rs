@@ -21,7 +21,7 @@ impl<'a>  MessageBox<'a> {
    pub fn new_msg(&mut self, msg: &String) {
       let spans = Self::string_to_spans(msg.clone());
       let line = Line::from(spans);
-      let mut msg = Self::wrap_line(self.width, &line);
+      let mut msg = Self::wrap_line(self.width - 3, &line);
       self.text.append(&mut msg.0);
       self.lines += msg.1;
    }
@@ -148,18 +148,20 @@ impl<'a>  MessageBox<'a> {
             for word in span.content.split("") {
                let new_word_len = word.len();
                if Self::fits_in_box(width, current_line_len, new_word_len) {
-                  current_line.push_span(Span::from(word.to_string()).style(current_span_style));
+                  current_line.push_span(Span::from(format!("{}", word.to_string())).style(current_span_style));
                   current_line_len = current_line.to_string().len();
                } else {
                   finished.push(current_line.clone());
                   current_line = Line::default();
                   current_line_len = 0;
+                  current_line.push_span(Span::from(format!("{}", word.to_string())).style(current_span_style));
                }
             }
          }
       }
+      finished.push(current_line.clone());
 
-      finished.push(current_line);
+
       let lines_added = finished.len();
 
       (finished, lines_added)

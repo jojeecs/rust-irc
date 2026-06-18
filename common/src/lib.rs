@@ -47,7 +47,6 @@ pub struct User {
     pub username: String,
     /// The user's unique database ID.
     pub user_id: usize,
-    pub current_room_name: String,
 }
 
 /// Information required for a user to log in.
@@ -63,6 +62,7 @@ pub struct Server {
     pub user_id_map: HashMap<usize, (Arc<User>, Arc<Session>)>,
     /// Maps usernames to their user IDs for quick lookup.
     pub username_map: HashMap<String, usize>,
+    pub user_room_map: HashMap<usize, String>,
     /// Storage for all active chat rooms.
     pub room_store: RoomStore,
     /// Global receiver for server-wide events.
@@ -170,12 +170,13 @@ impl Server {
             user_id_map: HashMap::new(),
             username_map: HashMap::new(),
             room_store: RoomStore::new(),
+            user_room_map: HashMap::new(),
             receiver,
             db_conn,
         }
     }
 
-    pub async fn find_user_from_username(&self, username: String) -> Option<User> {
+    pub async fn find_user_from_username(&mut self, username: String) -> Option<User> {
         let query = format!("SELECT DISTINCT * FROM users WHERE LOWER(username) LIKE LOWER('{}')", username);
         let rows = match self.run_query(query).await {
             Some(r) => r,
@@ -232,7 +233,6 @@ impl Server {
             return Some(User {
                 username,
                 user_id: user_id as usize,
-                current_room_name: room_name,
             });
         } else {
             println!("Unknown error occured ")
@@ -316,7 +316,7 @@ impl Server {
         false
     }
 
-    pub async fn create_new_user(&self, username: String, password: String) -> Option<User> {
+    pub async fn create_new_user(&mut self, username: String, password: String) -> Option<User> {
         let command = "INSERT INTO users (username, password, room) VALUES (?, ?, ?)".to_string();
         if let Err(e) = self
             .db_conn
@@ -378,7 +378,7 @@ impl Session {
 
 impl User {
     pub fn new(username: String, user_id: usize) -> User {
-        User { username, user_id, current_room_name: "Global".to_string() }
+        User { username, user_id }
     }
 }
 
