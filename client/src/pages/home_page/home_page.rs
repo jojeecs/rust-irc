@@ -22,6 +22,9 @@ pub struct HomePage<'a> {
     pub message_box: mbox<'a>,
     pub rooms: Vec<String>,
     pub cursor_position: Position,
+    pub help_message: String,
+    pub modal: Rect,
+    pub misc_input: InputField,
 }
 
 pub enum HomeField {
@@ -39,18 +42,36 @@ impl<'a> HomePage<'a> {
             message_box: mbox::new(crossterm::terminal::size().unwrap().0 as usize / 3),
             rooms: Vec::new(),
             cursor_position: Position::ORIGIN,
+            help_message: String::default(),
+            modal: Rect::default(),
+            misc_input: InputField::default(),
         }
     }
 }
 impl<'a> Page for HomePage<'a> {
     fn draw(&mut self, frame: &mut Frame, area: Rect) {
-        let center_area = area.centered(Constraint::Length(area.width.div(3)), Constraint::Percentage(100));
         let rooms_area = Rect::new(area.x, area.y, area.width.div(3), area.height);
-        let friends_area = Rect::new(center_area.x, area.y, area.width.div(3), area.height);
+        let center_area = Rect::new(rooms_area.width, area.top() + 5, area.width.div(3), area.height - 5);
+        let friends_area = Rect::new(center_area.width, area.y, area.width.div(3), area.height);
         self.render_center(frame, center_area);
         self.render_rooms(frame, rooms_area);
         self.render_friends(frame, friends_area);
         frame.set_cursor_position(self.cursor_position);
+
+        let message_area = Rect::new(center_area.x, area.y, center_area.width, area.height - center_area.height);
+
+        let help_box = Paragraph::new(self.help_message.clone());
+
+        frame.render_widget(help_box, message_area);
+
+        if !self.modal.is_empty() {
+            let popup_block = Block::bordered().title("Enter room name");
+            let modal_area = area.centered(Constraint::Length(30), Constraint::Length(3));
+            let paragraph = Paragraph::new(self.misc_input.value()).block(popup_block);
+            frame.render_widget(paragraph, modal_area);
+            frame.set_cursor_position((modal_area.x + self.misc_input.display().len() as u16 + 1, modal_area.y + 1));
+            
+        }
     }
 
     fn handle_event(&mut self, event: KeyEvent, event_handler: &mut EventHandler) {
@@ -63,6 +84,11 @@ impl<'a> Page for HomePage<'a> {
                         }
                     }
                     RoomSelection => {
+                        if !self.modal.is_empty() {
+                            let _ = self.ui_tx.send(Action::RoomCreationAttempt { name: self.misc_input.input.value_and_reset() });
+                            self.modal = Rect::default();
+                            return;
+                        }
                         let new_room_name = match self.rooms.get(self.state.room_index) {
                             Some(r) => r,
                             _ => {
@@ -127,8 +153,25 @@ impl<'a> Page for HomePage<'a> {
                 }
             }
             _ => {
-                let event = crossterm::event::Event::Key(event);
-                self.message_input.input.handle_event(&event);
+                match self.state.current_field {
+                    MessageInput => {
+                        let event = crossterm::event::Event::Key(event);
+                        self.message_input.input.handle_event(&event);
+                    },
+                    RoomSelection => {
+                        if self.modal.is_empty() && let KeyCode::Char(c) = event.code && c == 'e'   {
+                            self.modal = Rect::new((self.message_box.width / 2) as u16, (self.message_box.width / 2) as u16, 10, 10);
+                        } else {
+                            if !self.modal.is_empty() {
+                                let event = crossterm::event::Event::Key(event);
+                                self.misc_input.input.handle_event(&event);
+                            }
+                        }
+                    }
+                    Settings => {
+
+                    }
+                }
             }
         }
     }
@@ -139,7 +182,7 @@ impl<'a> HomePage<'a> {
         let lines = self.message_box.lines;
 
         let mut messages_box = area.centered_horizontally(Constraint::Percentage(100));
-        let mut input_box = area.centered(Constraint::Percentage(100), Constraint::Percentage(5));
+        let mut input_box = area.centered(Constraint::Percentage(100), Constraint::Length(3));
 
         messages_box.height -= input_box.height;
 
@@ -191,6 +234,8 @@ impl<'a> HomePage<'a> {
 
             self.cursor_position.x = cursor_x_pos;
             self.cursor_position.y = rooms_box.y + self.state.room_index as u16 + 1;
+
+            self.help_message = String::from("Press <e> to create new room");
         }
     }
 

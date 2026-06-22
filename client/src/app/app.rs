@@ -61,6 +61,12 @@ impl<'a> Client<'a> {
                             self.connection_state.connected = false;
                         },
                         Action::SendMessage {contents} => {
+                            if contents.starts_with("/pm") {
+                                let to_username = contents.split(" ").collect::<Vec<_>>().get(1).unwrap_or(&"").to_string();
+                                let contents = contents.split(" ").collect::<Vec<_>>().split_at(2).1.join(" ");
+                                self.socket_tx.send(ClientPacket::PrivateMessage { to: to_username, contents })?;
+                                continue;
+                            }
                             self.socket_tx.send(ClientPacket::PublicMessage {contents})?;
                         },
                         Action::SocketMessage {packet} => {
@@ -87,7 +93,7 @@ impl<'a> Client<'a> {
                         ClientPacket::AuthenticationAccepted { new_user } => {
                             self.ui_manager.switch_screen(Screen::Home(HomePage::new(self.ui_manager.app_tx.clone())))
                         }
-                        ClientPacket::PublicMessage {contents} => {
+                        ClientPacket::PublicMessage {contents} | ClientPacket::PrivateMessage { contents, .. } => {
                             self.ui_manager.handle_msg(contents);
                         },
                         ClientPacket::RoomUpdate {rooms} => {
@@ -108,6 +114,9 @@ impl<'a> Client<'a> {
                 },
                 Action::RoomChange {new_room_name, old_room_name} => {
                     let _ = self.socket_tx.send(RoomChange {new_room_name, old_room_name});
+                },
+                Action::RoomCreationAttempt {name} => {
+
                 }
                 _ => {}
             }

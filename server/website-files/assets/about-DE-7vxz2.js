@@ -1,0 +1,1 @@
+import{O as e,t}from"./jsx-runtime-Cpd2UDyi.js";var n=t();function r(){return(0,n.jsx)(`main`,{})}function i({}){return[{title:`About - fun.house`},{name:`description`,content:`Aspiring Cybersecurity Expect`}]}var a=e(function(){return(0,n.jsx)(r,{})});export{a as default,i as meta};

@@ -310,6 +310,7 @@ async fn server_handler(mut server: Server) {
                     let session_ref = Arc::new(session);
 
                     server.user_id_map.insert(user_id, (Arc::clone(&user), Arc::clone(&session_ref)));
+                    server.username_map.insert(user.username.clone(), user.user_id);
                     if let Some(room) = server.room_store.get_room_from_name(&"Global".to_string()) {
                         room.add_session(Arc::clone(&session_ref));
                         let _ = server.user_room_map.insert(user_id, "Global".to_string());
@@ -380,6 +381,7 @@ async fn server_handler(mut server: Server) {
                     .await;
                 },
                 PrivateMessage { to, from, contents } => {
+                    println!("Sending private message");
                     let user_from = match server.user_id_map.get(&from) {
                         Some(u) => u,
                         None => {
@@ -390,14 +392,16 @@ async fn server_handler(mut server: Server) {
                     let to_session = match server.get_session_from_username(to.clone()).await {
                         Some(s) => s,
                         None => {
-                            return;
+                            println!("Unable to find session to send to.");
+                            continue;
                         }
-                    };
+                    }.clone();
 
                     let from_session = match server.user_id_map.get(&from) {
                         Some((_, s)) => s,
                         None => {
-                            return;
+                            println!("Unable to find session to send from.");
+                            continue;
                         }
                     }.clone();
 

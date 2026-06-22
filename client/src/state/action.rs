@@ -8,5 +8,6 @@ pub enum Action {
     SendMessage { contents: String },
     SocketMessage { packet: ClientPacket },
     RoomChange { new_room_name: String, old_room_name: String  },
+    RoomCreationAttempt { name: String },
     Exit,
 }

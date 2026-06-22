@@ -37,7 +37,7 @@ impl<'a> UiManager<'a> {
 
         (Self {
             app_tx: app_tx.clone(),
-            current_screen: Screen::Login(LoginPage::new()),
+            current_screen: Screen::Login(LoginPage::default()),
             cursor_position: Position::ORIGIN
         }, app_rx, app_tx)
     }

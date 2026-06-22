@@ -37,8 +37,8 @@ pub struct LoginPage {
     password_input: InputField,
 }
 
-impl LoginPage {
-    pub fn new() -> Self {
+impl Default for LoginPage {
+    fn default() -> Self {
         let state = LoginState::default();
         let ip_input = InputField::new("Enter IP:Port to connect to: ".to_string());
         let username_input = InputField::new("Username".to_string());
@@ -71,9 +71,11 @@ impl Page for LoginPage {
                 frame.set_cursor_position((ip_box.x + x as u16, ip_box.y + 1));
             }
             _ => {
+
                 let mut username_box = frame.area().centered(Constraint::Length(50), Constraint::Length(3));
                 let password_box = frame.area().centered(Constraint::Length(50), Constraint::Length(3));
                 let mut help_box  = frame.area().centered(Constraint::Length(50), Constraint::Length(3));
+
 
                 username_box.y -= 3;
                 help_box.y += 3;
@@ -94,7 +96,16 @@ impl Page for LoginPage {
                     .style(Style::default())
                     .block(Block::bordered().title(self.password_input.label.clone()));
 
-                let help_message = Paragraph::new("Press <Enter> to submit").centered();
+                let prompt: String = match self.state.new_user {
+                    true => {
+                        String::from("Creating new user\nPress <Enter> to submit\nPress <up> to login")
+                    },
+                    false => {
+                        String::from("Logging in\nPress <Enter> to submit\nPress <down> to create new user")
+                    }
+                };
+
+                let help_message = Paragraph::new(prompt).centered();
 
                 frame.render_widget(username_input, username_box);
                 frame.render_widget(password_input, password_box);
@@ -156,6 +167,12 @@ impl Page for LoginPage {
                         self.state.set_focus(LoginField::NEXT);
                     }
                 }
+            },
+            KeyCode::Up => {
+                self.state.new_user = false;
+            },
+            KeyCode::Down => {
+                self.state.new_user = true;
             },
             _ => {
                 self.state.remove_error(LoginState::INCORRECT_INFORMATION);
